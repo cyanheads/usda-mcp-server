@@ -117,12 +117,6 @@ export const usdaGetFood = tool('usda_get_food', {
       recovery: 'Verify the FDC ID using usda_search_foods and try again with a valid ID.',
     },
     {
-      reason: 'invalid_unit',
-      code: JsonRpcErrorCode.InvalidParams,
-      when: 'An unrecognized unit string was provided.',
-      recovery: 'Use one of the supported units: g, oz, lb, kg, or serving.',
-    },
-    {
       reason: 'no_portion_data',
       code: JsonRpcErrorCode.InvalidParams,
       when: 'unit="serving" was requested but the food has no portion data.',
@@ -148,15 +142,6 @@ export const usdaGetFood = tool('usda_get_food', {
         }
         throw err;
       });
-
-    // Validate unit if provided
-    const validUnits = ['g', 'oz', 'lb', 'kg', 'serving'];
-    if (input.unit && !validUnits.includes(input.unit)) {
-      throw ctx.fail('invalid_unit', `Unrecognized unit "${input.unit}".`, {
-        unit: input.unit,
-        ...ctx.recoveryFor('invalid_unit'),
-      });
-    }
 
     // Portion scaling
     let scaledTo: { quantity: number; unit: string; gramWeight: number } | undefined;

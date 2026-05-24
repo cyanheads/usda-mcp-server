@@ -11,19 +11,6 @@
 
 ---
 
-## First Session
-
-This project was just scaffolded with `bunx @cyanheads/mcp-ts-core init`. The framework, skills, and example definitions are in place — the domain isn't. The user's first messages will set direction; wait for them before proceeding.
-
-> **Remove this section** from CLAUDE.md / AGENTS.md after completing these steps. The skills and conventions below remain — this block is one-time onboarding only.
-
-1. **Get your bearings.** Take stock of the project tree, the skills in `skills/`, and the tools/MCP servers available. Light tool use is fine for context-building — you're mapping the territory, not committing yet.
-2. **Read the framework docs** — `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` (builders, Context, errors, exports, conventions)
-3. **Run the `setup` skill** — read `skills/setup/SKILL.md` and follow its checklist (project orientation, agent protocol file selection, echo definition cleanup, skill sync)
-4. **Design the server** — read `skills/design-mcp-server/SKILL.md` and work through it with the user to map the domain into tools, resources, and services before scaffolding
-
----
-
 ## What's Next?
 
 When the user asks what's next or needs direction, suggest options based on the current project state. Common next steps:
@@ -60,35 +47,45 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { getFdcService } from '@/services/fdc/fdc-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
-  annotations: { readOnlyHint: true },
+export const usdaSearchFoods = tool('usda_search_foods', {
+  description:
+    'Search USDA FoodData Central foods by keyword. Returns matching foods with FDC IDs and a preview of key nutrients.',
+  annotations: { readOnlyHint: true, openWorldHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    query: z.string().describe('Search terms — food name, ingredient, or UPC/GTIN code.'),
+    dataType: z
+      .array(z.enum(['SR Legacy', 'Foundation', 'Survey (FNDDS)', 'Branded']))
+      .optional()
+      .describe('FDC data sources to search. Defaults to ["SR Legacy"].'),
+    pageSize: z.number().int().min(1).max(50).default(10).describe('Results per page.'),
+    pageNumber: z.number().int().min(1).default(1).describe('Page number (1-based).'),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    totalHits: z.number().describe('Total foods matching the query.'),
+    foods: z.array(z.object({
+      fdcId: z.number().describe('FDC ID — pass to usda_get_food or usda_compare_foods.'),
+      description: z.string().describe('USDA food description.'),
+      dataType: z.string().describe('FDC data source.'),
+    })).describe('Matching foods.'),
   }),
-  auth: ['inventory:read'],
+  errors: [
+    { reason: 'no_results', code: JsonRpcErrorCode.NotFound,
+      when: 'No foods matched the query.',
+      recovery: 'Broaden the query or try a different dataType (e.g. add "Branded").' },
+  ],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const result = await getFdcService().searchFoods({ query: input.query }, ctx);
+    if (result.foods.length === 0) throw ctx.fail('no_results', `No foods matched "${input.query}".`);
+    return { totalHits: result.totalHits, foods: result.foods };
   },
 
-  // format() populates content[] — the markdown twin of structuredContent.
-  // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
   format: (result) => [{
     type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
+    text: result.foods.map(f => `**${f.description}** (FDC ID: ${f.fdcId})`).join('\n'),
   }],
 });
 ```
@@ -97,60 +94,49 @@ export const searchItems = tool('search_items', {
 
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { getFdcService } from '@/services/fdc/fdc-service.js';
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
-  },
-});
-```
-
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
+export const usdaFoodResource = resource('usda://food/{fdcId}', {
+  name: 'USDA Food Profile',
+  description: 'Full nutrient profile for a specific food by FDC ID. Returns all available nutrients per 100g.',
+  mimeType: 'application/json',
+  params: z.object({
+    fdcId: z.string().describe('FDC ID of the food (numeric string, e.g. "171077").'),
   }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
+  errors: [
+    { reason: 'not_found', code: JsonRpcErrorCode.NotFound,
+      when: 'The FDC ID does not exist.',
+      recovery: 'Verify the FDC ID using usda_search_foods and use a valid numeric ID.' },
   ],
+
+  async handler(params, ctx) {
+    const fdcId = parseInt(params.fdcId, 10);
+    if (Number.isNaN(fdcId) || fdcId <= 0) throw ctx.fail('not_found', `"${params.fdcId}" is not a valid FDC ID.`);
+    return getFdcService().getFoodDetail(fdcId, undefined, ctx);
+  },
 });
 ```
 
 ### Server config
 
 ```ts
-// src/config/server-config.ts — lazy-parsed, separate from framework config
+// src/config/server-config.ts
 import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
-  apiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
+  fdcApiKey: z.string().describe('USDA FoodData Central API key (data.gov)'),
 });
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
-  _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'MY_API_KEY',
-    maxResults: 'MY_MAX_RESULTS',
-  });
+  _config ??= parseEnvConfig(ServerConfigSchema, { fdcApiKey: 'USDA_FDC_API_KEY' });
   return _config;
 }
 ```
 
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
+`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`USDA_FDC_API_KEY`) not the path (`fdcApiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
 
 ---
 
@@ -161,11 +147,7 @@ Handlers receive a unified `ctx` object. Key properties:
 | Property | Description |
 |:---------|:------------|
 | `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
-| `ctx.elicit` | Ask user for structured input. **Check for presence first:** `if (ctx.elicit) { ... }` |
-| `ctx.sample` | Request LLM completion from the client. **Check for presence first:** `if (ctx.sample) { ... }` |
-| `ctx.signal` | `AbortSignal` for cancellation. |
-| `ctx.progress` | Task progress (present when `task: true`) — `.setTotal(n)`, `.increment()`, `.update(message)`. |
+| `ctx.signal` | `AbortSignal` for cancellation — passed to `fetchWithTimeout` and `withRetry`. |
 | `ctx.requestId` | Unique request ID. |
 | `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
 
@@ -217,20 +199,24 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 
 ```text
 src/
-  index.ts                              # createApp() entry point
+  index.ts                              # createApp() entry point — registers tools, resources, inits FdcService
   config/
-    server-config.ts                    # Server-specific env vars (Zod schema)
+    server-config.ts                    # USDA_FDC_API_KEY — lazy-parsed Zod schema
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    fdc/
+      fdc-service.ts                    # FdcService — API client, normalization, init/accessor
+      nutrient-reference.ts             # Static nutrient reference data (~150 nutrients)
+      types.ts                          # Raw API shapes and normalized domain types
   mcp-server/
     tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
+      usda-search-foods.tool.ts         # Keyword search with pagination and nutrient preview
+      usda-get-food.tool.ts             # Single food detail with portion scaling
+      usda-get-foods.tool.ts            # Batch fetch for 2–20 FDC IDs
+      usda-compare-foods.tool.ts        # Side-by-side comparison table for 2–5 foods
+      usda-list-nutrients.tool.ts       # Static nutrient reference lookup
     resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
+      usda-food.resource.ts             # usda://food/{fdcId}
+      usda-nutrients.resource.ts        # usda://nutrients
 ```
 
 ---

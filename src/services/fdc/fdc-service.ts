@@ -5,6 +5,7 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import {
   fetchWithTimeout,
@@ -183,7 +184,6 @@ function fetchFdc<T>(
 
       const text = await response.text();
       if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
-        const { serviceUnavailable } = await import('@cyanheads/mcp-ts-core/errors');
         throw serviceUnavailable(
           'USDA FDC API returned HTML instead of JSON — likely rate-limited.',
         );

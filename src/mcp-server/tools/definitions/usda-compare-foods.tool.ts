@@ -24,7 +24,7 @@ const DEFAULT_COMPARE_NUTRIENTS = [
 ];
 
 /** Convert quantity in a unit to grams. */
-function toGrams(quantity: number, unit: string): number {
+function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
   switch (unit) {
     case 'g':
       return quantity;
@@ -34,8 +34,6 @@ function toGrams(quantity: number, unit: string): number {
       return quantity * 453.592;
     case 'kg':
       return quantity * 1000;
-    default:
-      return quantity;
   }
 }
 
