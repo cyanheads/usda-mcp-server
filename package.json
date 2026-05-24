@@ -1,7 +1,7 @@
 {
   "name": "usda-mcp-server",
   "mcpName": "io.github.cyanheads/usda-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Search foods, compare nutrients, and look up the full USDA FoodData Central database via MCP. STDIO or Streamable HTTP.",
   "type": "module",
   "main": "dist/index.js",
