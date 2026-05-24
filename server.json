@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "usda-mcp-server",
-  "description": "",
+  "name": "cyanheads/usda-mcp-server",
+  "description": "MCP server for USDA FoodData Central — search, get, compare foods and list nutrients.",
   "repository": {
-    "url": "",
+    "url": "https://github.com/cyanheads/usda-mcp-server",
     "source": "github"
   },
   "version": "0.1.0",

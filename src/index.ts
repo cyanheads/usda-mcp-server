@@ -5,17 +5,19 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
-import { echoTool } from './mcp-server/tools/definitions/echo.tool.js';
-import { echoAppTool } from './mcp-server/tools/definitions/echo-app.app-tool.js';
-import { echoResource } from './mcp-server/resources/definitions/echo.resource.js';
-import { echoAppUiResource } from './mcp-server/resources/definitions/echo-app-ui.app-resource.js';
-import { echoPrompt } from './mcp-server/prompts/definitions/echo.prompt.js';
+import { allResourceDefinitions } from './mcp-server/resources/definitions/index.js';
+import { allToolDefinitions } from './mcp-server/tools/definitions/index.js';
+import { initFdcService } from './services/fdc/fdc-service.js';
 
 await createApp({
-  tools: [echoTool, echoAppTool],
-  resources: [echoResource, echoAppUiResource],
-  prompts: [echoPrompt],
-  // instructions: 'Server-level orientation forwarded to the model on every initialize.\n' +
-  //   '- Use shortcut `X` for the most common case\n' +
-  //   '- Tools require auth via the `inventory:read` scope',
+  tools: allToolDefinitions,
+  resources: allResourceDefinitions,
+  prompts: [],
+  instructions:
+    'USDA FoodData Central (FDC) — authoritative US food composition database (~400K+ foods).\n' +
+    'Key workflow: usda_search_foods → fdcId → usda_get_food (single) or usda_compare_foods (comparison).\n' +
+    'Use usda_list_nutrients to resolve nutrient names to numeric IDs before filtering.',
+  setup(core) {
+    initFdcService(core.config, core.storage);
+  },
 });
