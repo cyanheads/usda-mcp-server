@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-05-24
+
+Drop tsx, align all scripts to bun-native execution; add funding block
+
 ## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-05-24 · 🛡️ Security
 
 Security fix (API key moved to header), 6 field-test bugs fixed, input validation hardened, tool descriptions improved, code simplified
