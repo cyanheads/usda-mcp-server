@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-05-24 · 🛡️ Security
+
+Security fix (API key moved to header), 6 field-test bugs fixed, input validation hardened, tool descriptions improved, code simplified
+
 ## [0.1.2](changelog/0.1.x/0.1.2.md) — 2026-05-24
 
 Scope npm package to @cyanheads/usda-mcp-server

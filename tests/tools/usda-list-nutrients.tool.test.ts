@@ -58,6 +58,38 @@ describe('usdaListNutrients', () => {
     }
   });
 
+  it('has no duplicate nutrient IDs', async () => {
+    const ctx = createMockContext();
+    const input = usdaListNutrients.input.parse({});
+    const result = await usdaListNutrients.handler(input, ctx);
+
+    const ids = result.nutrients.map((n) => n.id);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(ids.length);
+  });
+
+  it('has no duplicate nutrient names', async () => {
+    const ctx = createMockContext();
+    const input = usdaListNutrients.input.parse({});
+    const result = await usdaListNutrients.handler(input, ctx);
+
+    const names = result.nutrients.map((n) => n.name);
+    const uniqueNames = new Set(names);
+    expect(uniqueNames.size).toBe(names.length);
+  });
+
+  it('uses correct ID for Calcium (1087) not Galactose', async () => {
+    const ctx = createMockContext();
+    const input = usdaListNutrients.input.parse({});
+    const result = await usdaListNutrients.handler(input, ctx);
+
+    const calcium = result.nutrients.find((n) => n.id === 1087);
+    expect(calcium?.name).toBe('Calcium, Ca');
+
+    const galactose = result.nutrients.find((n) => n.name === 'Galactose');
+    expect(galactose?.id).toBe(1075);
+  });
+
   it('includes well-known nutrient IDs for common categories', async () => {
     const ctx = createMockContext();
     const allInput = usdaListNutrients.input.parse({});

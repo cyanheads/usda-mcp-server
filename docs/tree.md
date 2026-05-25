@@ -1,6 +1,6 @@
 # usda-mcp-server - Directory Structure
 
-Generated on: 2026-05-24 13:11:33
+Generated on: 2026-05-25 01:43:41
 
 ```text
 usda-mcp-server/
@@ -144,6 +144,7 @@ usda-mcp-server/
 ├── bun.lock
 ├── bunfig.toml
 ├── CHANGELOG.md
+├── CITATION.cff
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile

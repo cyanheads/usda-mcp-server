@@ -99,6 +99,18 @@ describe('usdaSearchFoods', () => {
     );
   });
 
+  it('throws ctx.fail("query_empty") for whitespace-only query', async () => {
+    const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+    const input = usdaSearchFoods.input.parse({ query: '   ' });
+    await expect(usdaSearchFoods.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'query_empty' },
+    });
+  });
+
+  it('schema rejects empty string query', () => {
+    expect(() => usdaSearchFoods.input.parse({ query: '' })).toThrow();
+  });
+
   it('throws ctx.fail("no_results") when service returns empty foods', async () => {
     const service = await getServiceMock();
     service.searchFoods.mockResolvedValue({

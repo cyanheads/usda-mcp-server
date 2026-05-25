@@ -53,6 +53,18 @@ describe('usdaCompareFoods', () => {
     service.getFoodsBatch.mockResolvedValue({ foods: [SPINACH, KALE], failed: [] });
   });
 
+  it('schema rejects fdcIds containing 0 or negative values', () => {
+    expect(() => usdaCompareFoods.input.parse({ fdcIds: [0, 168421] })).toThrow();
+    expect(() => usdaCompareFoods.input.parse({ fdcIds: [-1, 168421] })).toThrow();
+  });
+
+  it('schema rejects zero or negative quantity', () => {
+    expect(() => usdaCompareFoods.input.parse({ fdcIds: [168462, 168421], quantity: 0 })).toThrow();
+    expect(() =>
+      usdaCompareFoods.input.parse({ fdcIds: [168462, 168421], quantity: -100 }),
+    ).toThrow();
+  });
+
   it('returns a comparison result with basis, foods, and nutrients', async () => {
     const ctx = createMockContext({ errors: usdaCompareFoods.errors });
     const input = usdaCompareFoods.input.parse({ fdcIds: [168462, 168421] });

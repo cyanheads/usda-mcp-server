@@ -7,8 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
 
-/** Convert an amount in grams to the requested unit. */
-function toGrams(quantity: number, unit: string): number {
+function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
   switch (unit) {
     case 'g':
       return quantity;
@@ -18,18 +17,20 @@ function toGrams(quantity: number, unit: string): number {
       return quantity * 453.592;
     case 'kg':
       return quantity * 1000;
-    default:
-      throw new Error(`Unsupported unit: ${unit}`);
   }
 }
 
 export const usdaGetFood = tool('usda_get_food', {
   title: 'Get USDA Food',
   description:
-    'Full nutrient profile for one food by FDC ID. Returns all available nutrients (or a filtered subset via the nutrients[] param) with optional per-portion scaling. Use usda_search_foods to discover FDC IDs. Provide quantity + unit to scale all nutrient values from per-100g to the specified portion (e.g. quantity=200, unit="g" → per-200g values). Use unit="serving" to scale to the food\'s first defined portion weight. Filtering nutrients[] to just the IDs you need reduces context size for common queries.',
+    'Get the full nutrient profile for one food by FDC ID. Returns all available nutrients (or a filtered subset via the nutrients[] param) with optional per-portion scaling. Use usda_search_foods to discover FDC IDs. Provide quantity + unit to scale all nutrient values from per-100g to the specified portion (e.g. quantity=200, unit="g" → per-200g values). Use unit="serving" to scale to the food\'s first defined portion weight. Narrow nutrients[] to specific IDs to reduce response size for focused queries.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
-    fdcId: z.number().int().describe('FDC ID of the food. Use usda_search_foods to discover IDs.'),
+    fdcId: z
+      .number()
+      .int()
+      .min(1)
+      .describe('FDC ID of the food. Use usda_search_foods to discover IDs.'),
     nutrients: z
       .array(z.number().int())
       .optional()
@@ -38,9 +39,10 @@ export const usdaGetFood = tool('usda_get_food', {
       ),
     quantity: z
       .number()
+      .positive()
       .optional()
       .describe(
-        'Amount of food to scale nutrient values to. When provided, unit is required. Omit for per-100g values (FDC database native basis).',
+        'Amount of food to scale nutrient values to. Must be positive. When provided, unit is required. Omit for per-100g values (FDC database native basis).',
       ),
     unit: z
       .enum(['g', 'oz', 'lb', 'kg', 'serving'])
@@ -51,12 +53,19 @@ export const usdaGetFood = tool('usda_get_food', {
   }),
   output: z.object({
     fdcId: z.number().describe('FDC ID of the food.'),
-    description: z.string().describe('USDA food description.'),
+    description: z
+      .string()
+      .describe(
+        'Full USDA food name (e.g. "Chicken, broilers or fryers, breast, meat only, raw").',
+      ),
     dataType: z
       .string()
       .describe('FDC data source: SR Legacy, Foundation, Survey (FNDDS), or Branded.'),
-    foodCategory: z.string().optional().describe('USDA food category.'),
-    publicationDate: z.string().optional().describe('FDC publication date.'),
+    foodCategory: z
+      .string()
+      .optional()
+      .describe('USDA food category (e.g. "Poultry Products"). Absent for some branded items.'),
+    publicationDate: z.string().optional().describe('Date this food entry was published in FDC.'),
     brandOwner: z.string().optional().describe('Brand owner. Branded items only.'),
     brandName: z.string().optional().describe('Brand name. Branded items only.'),
     ingredients: z.string().optional().describe('Ingredient list from label. Branded items only.'),
@@ -80,9 +89,13 @@ export const usdaGetFood = tool('usda_get_food', {
       .describe('All named portions for this food.'),
     scaledTo: z
       .object({
-        quantity: z.number().describe('The quantity value that was requested.'),
-        unit: z.string().describe('The unit that was requested.'),
-        gramWeight: z.number().describe('Resolved gram weight used for scaling.'),
+        quantity: z.number().describe('Numeric quantity provided in the request.'),
+        unit: z.string().describe('Unit provided in the request (g, oz, lb, kg, or serving).'),
+        gramWeight: z
+          .number()
+          .describe(
+            'Gram weight resolved from quantity+unit — all nutrient values are per this many grams.',
+          ),
       })
       .optional()
       .describe(
@@ -117,6 +130,12 @@ export const usdaGetFood = tool('usda_get_food', {
       recovery: 'Verify the FDC ID using usda_search_foods and try again with a valid ID.',
     },
     {
+      reason: 'quantity_without_unit',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'quantity is provided but unit is omitted.',
+      recovery: 'Provide unit (g, oz, lb, kg, or serving) alongside quantity.',
+    },
+    {
       reason: 'no_portion_data',
       code: JsonRpcErrorCode.InvalidParams,
       when: 'unit="serving" was requested but the food has no portion data.',
@@ -126,6 +145,12 @@ export const usdaGetFood = tool('usda_get_food', {
 
   async handler(input, ctx) {
     ctx.log.info('Fetching food detail', { fdcId: input.fdcId, nutrients: input.nutrients });
+
+    if (input.quantity != null && !input.unit) {
+      throw ctx.fail('quantity_without_unit', 'unit is required when quantity is provided.', {
+        recovery: { hint: 'Provide unit (g, oz, lb, kg, or serving) alongside quantity.' },
+      });
+    }
 
     const food = await getFdcService()
       .getFoodDetail(input.fdcId, input.nutrients?.length ? input.nutrients : undefined, ctx)
@@ -167,50 +192,24 @@ export const usdaGetFood = tool('usda_get_food', {
       scaledTo = { quantity: input.quantity, unit: input.unit, gramWeight };
     }
 
-    const nutrients = food.nutrients.map((n) => ({
-      ...n,
-      amount: Number((n.amount * scaleFactor).toFixed(4)),
-    }));
-
-    const result: Record<string, unknown> = {
+    return {
       fdcId: food.fdcId,
       description: food.description,
       dataType: food.dataType,
-      nutrients,
-    };
-
-    if (food.foodCategory) result.foodCategory = food.foodCategory;
-    if (food.publicationDate) result.publicationDate = food.publicationDate;
-    if (food.brandOwner) result.brandOwner = food.brandOwner;
-    if (food.brandName) result.brandName = food.brandName;
-    if (food.ingredients) result.ingredients = food.ingredients;
-    if (scaledTo) result.scaledTo = scaledTo;
-
-    if (food.portions.length > 0) {
-      result.servingInfo = food.portions[0];
-      result.allPortions = food.portions;
-    }
-
-    return result as {
-      fdcId: number;
-      description: string;
-      dataType: string;
-      foodCategory?: string;
-      publicationDate?: string;
-      brandOwner?: string;
-      brandName?: string;
-      ingredients?: string;
-      servingInfo?: { description: string; gramWeight: number };
-      allPortions?: Array<{ description: string; gramWeight: number }>;
-      scaledTo?: { quantity: number; unit: string; gramWeight: number };
-      nutrients: Array<{
-        id: number;
-        name: string;
-        number: string;
-        amount: number;
-        unit: string;
-        percentDailyValue?: number;
-      }>;
+      ...(food.foodCategory && { foodCategory: food.foodCategory }),
+      ...(food.publicationDate && { publicationDate: food.publicationDate }),
+      ...(food.brandOwner && { brandOwner: food.brandOwner }),
+      ...(food.brandName && { brandName: food.brandName }),
+      ...(food.ingredients && { ingredients: food.ingredients }),
+      ...(scaledTo && { scaledTo }),
+      ...(food.portions.length > 0 && {
+        servingInfo: food.portions[0],
+        allPortions: food.portions,
+      }),
+      nutrients: food.nutrients.map((n) => ({
+        ...n,
+        amount: Number((n.amount * scaleFactor).toFixed(4)),
+      })),
     };
   },
 

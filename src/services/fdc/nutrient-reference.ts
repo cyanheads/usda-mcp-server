@@ -54,14 +54,13 @@ export const NUTRIENT_REFERENCE: NutrientReference[] = [
   { id: 1007, name: 'Ash', number: '207', unit: 'G', category: 'macronutrients' },
   { id: 1057, name: 'Caffeine', number: '262', unit: 'MG', category: 'macronutrients' },
   { id: 1058, name: 'Theobromine', number: '263', unit: 'MG', category: 'macronutrients' },
-  { id: 1075, name: 'Lactose', number: '213', unit: 'G', category: 'macronutrients' },
+  { id: 1011, name: 'Lactose', number: '213', unit: 'G', category: 'macronutrients' },
   { id: 1076, name: 'Maltose', number: '214', unit: 'G', category: 'macronutrients' },
   { id: 1080, name: 'Sucrose', number: '210', unit: 'G', category: 'macronutrients' },
   { id: 1081, name: 'Glucose', number: '211', unit: 'G', category: 'macronutrients' },
   { id: 1083, name: 'Fructose', number: '212', unit: 'G', category: 'macronutrients' },
-  { id: 1087, name: 'Galactose', number: '287', unit: 'G', category: 'macronutrients' },
+  { id: 1075, name: 'Galactose', number: '287', unit: 'G', category: 'macronutrients' },
   { id: 1009, name: 'Starch', number: '209', unit: 'G', category: 'macronutrients' },
-  { id: 1010, name: 'Sucrose', number: '210', unit: 'G', category: 'macronutrients' },
   { id: 2000, name: 'Sugars, total', number: '269.3', unit: 'G', category: 'macronutrients' },
 
   // --- Lipids ---
@@ -161,13 +160,6 @@ export const NUTRIENT_REFERENCE: NutrientReference[] = [
   { id: 1120, name: 'Cryptoxanthin, beta', number: '334', unit: 'UG', category: 'vitamins' },
   { id: 1121, name: 'Lycopene', number: '337', unit: 'UG', category: 'vitamins' },
   { id: 1122, name: 'Lutein + zeaxanthin', number: '338', unit: 'UG', category: 'vitamins' },
-  {
-    id: 1123,
-    name: 'Vitamin C, total ascorbic acid',
-    number: '401',
-    unit: 'MG',
-    category: 'vitamins',
-  },
   {
     id: 1162,
     name: 'Vitamin C, total ascorbic acid',

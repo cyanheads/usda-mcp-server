@@ -13,7 +13,7 @@ export const usdaGetFoods = tool('usda_get_foods', {
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcIds: z
-      .array(z.number().int())
+      .array(z.number().int().min(1))
       .min(2)
       .max(20)
       .describe('FDC IDs to fetch — 2 to 20 IDs. Use usda_search_foods to discover IDs.'),
@@ -30,7 +30,11 @@ export const usdaGetFoods = tool('usda_get_foods', {
         z
           .object({
             fdcId: z.number().describe('FDC ID of this food.'),
-            description: z.string().describe('USDA food description.'),
+            description: z
+              .string()
+              .describe(
+                'Full USDA food name (e.g. "Chicken, broilers or fryers, breast, meat only, raw").',
+              ),
             dataType: z
               .string()
               .describe('FDC data source: SR Legacy, Foundation, Survey (FNDDS), or Branded.'),

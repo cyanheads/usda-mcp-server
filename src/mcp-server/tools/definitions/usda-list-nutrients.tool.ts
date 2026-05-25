@@ -9,7 +9,7 @@ import { getNutrientsByCategory } from '@/services/fdc/nutrient-reference.js';
 export const usdaListNutrients = tool('usda_list_nutrients', {
   title: 'List USDA Nutrients',
   description:
-    'Returns the FDC nutrient reference table — all tracked nutrients with their numeric IDs, names, SR reference numbers, units, and categories. Use this to resolve a nutrient name (e.g. "vitamin C") to its FDC ID (1162) before passing it to the nutrients[] filter on other tools. Optionally filter by category: macronutrients, vitamins, minerals, lipids, amino_acids, or other. The data is stable — call once and reuse the IDs.',
+    'Look up the FDC nutrient reference table — all tracked nutrients with their numeric IDs, names, SR reference numbers, units, and categories. Use to resolve a nutrient name (e.g. "vitamin C") to its FDC ID (1162) before passing it to the nutrients[] filter on other tools. Filter by category (macronutrients, vitamins, minerals, lipids, amino_acids, or other) to narrow results. The data is static — call once and reuse the IDs.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     category: z

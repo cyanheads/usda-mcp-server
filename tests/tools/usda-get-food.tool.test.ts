@@ -43,6 +43,27 @@ describe('usdaGetFood', () => {
     service.getFoodDetail.mockResolvedValue(MOCK_FOOD_DETAIL);
   });
 
+  it('schema rejects fdcId of 0', () => {
+    expect(() => usdaGetFood.input.parse({ fdcId: 0 })).toThrow();
+  });
+
+  it('schema rejects negative fdcId', () => {
+    expect(() => usdaGetFood.input.parse({ fdcId: -1 })).toThrow();
+  });
+
+  it('schema rejects non-positive quantity', () => {
+    expect(() => usdaGetFood.input.parse({ fdcId: 1, quantity: 0, unit: 'g' })).toThrow();
+    expect(() => usdaGetFood.input.parse({ fdcId: 1, quantity: -100, unit: 'g' })).toThrow();
+  });
+
+  it('throws ctx.fail("quantity_without_unit") when quantity provided without unit', async () => {
+    const ctx = createMockContext({ errors: usdaGetFood.errors });
+    const input = usdaGetFood.input.parse({ fdcId: 171077, quantity: 200 });
+    await expect(usdaGetFood.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'quantity_without_unit' },
+    });
+  });
+
   it('returns full nutrient profile for a valid fdcId', async () => {
     const ctx = createMockContext({ errors: usdaGetFood.errors });
     const input = usdaGetFood.input.parse({ fdcId: 171077 });

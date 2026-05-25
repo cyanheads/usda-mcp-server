@@ -17,7 +17,7 @@ await createApp({
     'USDA FoodData Central (FDC) — authoritative US food composition database (~400K+ foods).\n' +
     'Key workflow: usda_search_foods → fdcId → usda_get_food (single) or usda_compare_foods (comparison).\n' +
     'Use usda_list_nutrients to resolve nutrient names to numeric IDs before filtering.',
-  setup(core) {
-    initFdcService(core.config, core.storage);
+  setup() {
+    initFdcService();
   },
 });

@@ -40,11 +40,11 @@ function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
 export const usdaCompareFoods = tool('usda_compare_foods', {
   title: 'Compare USDA Foods',
   description:
-    'Side-by-side nutrient comparison for 2–5 foods. Returns a structured table — one row per nutrient, one column per food — and formats it as a markdown table. Best for "spinach vs kale iron" or "which has more protein?" questions. Pass the default nutrients to get the 12 most commonly compared; provide nutrients[] for specific nutrients. All values are scaled to the same gram basis (default 100g). If one or more FDC IDs are not found, the comparison proceeds with valid foods — only throws too_few_foods when fewer than 2 IDs return data.',
+    'Compare nutrients side-by-side for 2–5 foods. Returns a structured table — one row per nutrient, one column per food — formatted as markdown. Best for "spinach vs kale iron" or "which has more protein?" questions. Omit nutrients[] to use the 12 most common defaults (energy, protein, fat, saturated fat, carbs, fiber, sugars, sodium, potassium, calcium, iron, vitamin C); provide nutrients[] with specific FDC IDs to compare different nutrients. All values are scaled to the same gram basis (default 100g). If one or more FDC IDs are not found, the comparison proceeds with the valid foods — only throws too_few_foods when fewer than 2 IDs return data.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcIds: z
-      .array(z.number().int())
+      .array(z.number().int().min(1))
       .min(2)
       .max(5)
       .describe('FDC IDs to compare — 2 to 5 foods. Use usda_search_foods to discover IDs.'),
@@ -56,8 +56,11 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       ),
     quantity: z
       .number()
+      .positive()
       .default(100)
-      .describe('Gram basis for comparison. All values scaled to this amount. Default 100.'),
+      .describe(
+        'Gram basis for comparison. All values scaled to this amount. Must be positive. Default 100.',
+      ),
     unit: z
       .enum(['g', 'oz', 'lb', 'kg'])
       .default('g')
@@ -68,9 +71,13 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
   output: z.object({
     basis: z
       .object({
-        quantity: z.number().describe('The quantity value used for scaling.'),
-        unit: z.string().describe('The unit used for scaling.'),
-        gramWeight: z.number().describe('Resolved gram weight used for all values.'),
+        quantity: z.number().describe('Numeric quantity provided in the request.'),
+        unit: z.string().describe('Unit provided in the request (g, oz, lb, or kg).'),
+        gramWeight: z
+          .number()
+          .describe(
+            'Gram weight resolved from quantity+unit — all nutrient values are per this many grams.',
+          ),
       })
       .describe('The common scaling basis applied to all nutrient values.'),
     foods: z
@@ -78,8 +85,10 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
         z
           .object({
             fdcId: z.number().describe('FDC ID.'),
-            description: z.string().describe('USDA food description.'),
-            dataType: z.string().describe('FDC data source.'),
+            description: z.string().describe('Full USDA food name (e.g. "Spinach, raw").'),
+            dataType: z
+              .string()
+              .describe('FDC data source: SR Legacy, Foundation, Survey (FNDDS), or Branded.'),
           })
           .describe('One of the compared foods.'),
       )
@@ -89,8 +98,8 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
         z
           .object({
             id: z.number().describe('FDC nutrient ID.'),
-            name: z.string().describe('Nutrient name.'),
-            unit: z.string().describe('Measurement unit.'),
+            name: z.string().describe('Nutrient name (e.g. "Protein", "Energy").'),
+            unit: z.string().describe('Measurement unit (e.g. "G", "MG", "KCAL").'),
             values: z
               .array(z.number().nullable())
               .describe(
@@ -138,14 +147,12 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
     const gramWeight = toGrams(input.quantity, input.unit);
     const scaleFactor = gramWeight / 100;
 
-    // Batch fetch all foods
     const { foods: rawFoods, failed } = await getFdcService().getFoodsBatch(
       input.fdcIds,
       nutrientIds,
       ctx,
     );
 
-    // Need at least 2 valid foods
     if (rawFoods.length < 2) {
       throw ctx.fail(
         'too_few_foods',
@@ -160,15 +167,13 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       dataType: f.dataType,
     }));
 
-    // Track missing data
     const missingData: Array<{ fdcId: number; nutrientId: number | null }> = failed.map((f) => ({
       fdcId: f.fdcId,
       nutrientId: null,
     }));
 
-    // Build nutrient rows — pivot (nutrient × food)
+    // Pivot: nutrient × food — resolve name/unit from whichever food has it
     const nutrientRows = nutrientIds.map((nid) => {
-      // Find nutrient name/unit from first food that has it
       let name = `Nutrient ${nid}`;
       let unit = '';
       for (const food of rawFoods) {
@@ -192,25 +197,14 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       return { id: nid, name, unit, values };
     });
 
-    // Filter out nutrients where all values are null
     const nutrientRowsFiltered = nutrientRows.filter((r) => r.values.some((v) => v !== null));
 
-    const result: {
-      basis: { quantity: number; unit: string; gramWeight: number };
-      foods: Array<{ fdcId: number; description: string; dataType: string }>;
-      nutrients: Array<{ id: number; name: string; unit: string; values: (number | null)[] }>;
-      missingData?: Array<{ fdcId: number; nutrientId: number | null }>;
-    } = {
+    return {
       basis: { quantity: input.quantity, unit: input.unit, gramWeight },
       foods,
       nutrients: nutrientRowsFiltered,
+      ...(missingData.length > 0 && { missingData }),
     };
-
-    if (missingData.length > 0) {
-      result.missingData = missingData;
-    }
-
-    return result;
   },
 
   format: (result) => {
@@ -220,7 +214,6 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       `**Basis:** ${result.basis.quantity} ${result.basis.unit} (${result.basis.gramWeight.toFixed(1)}g)\n`,
     );
 
-    // Markdown table: header row
     const foodHeaders = result.foods.map((f) => f.description).join(' | ');
     lines.push(`| Nutrient | ${foodHeaders} |`);
     lines.push(`| --- | ${result.foods.map(() => '---').join(' | ')} |`);
@@ -252,7 +245,7 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       }
     }
 
-    // Also include foods/fdcIds in the text so format-parity is satisfied
+    // format-parity: structuredContent carries the foods array, text must too
     lines.push('\n**Compared foods:**');
     for (const f of result.foods) {
       lines.push(`- **${f.description}** (FDC ID: ${f.fdcId}, type: ${f.dataType})`);

@@ -5,7 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { type FdcService, getFdcService } from '@/services/fdc/fdc-service.js';
+import { getFdcService } from '@/services/fdc/fdc-service.js';
 
 export const usdaSearchFoods = tool('usda_search_foods', {
   title: 'Search USDA Foods',
@@ -15,6 +15,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
   input: z.object({
     query: z
       .string()
+      .min(1)
       .describe(
         'Search terms — food name, ingredient, or UPC/GTIN code for branded products. Examples: "chicken breast raw", "banana", "012345678901".',
       ),
@@ -123,6 +124,12 @@ export const usdaSearchFoods = tool('usda_search_foods', {
 
   errors: [
     {
+      reason: 'query_empty',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'The query is empty or contains only whitespace.',
+      recovery: 'Provide a food name, ingredient, or UPC/GTIN code as the query.',
+    },
+    {
       reason: 'no_results',
       code: JsonRpcErrorCode.NotFound,
       when: 'No foods matched the query in the specified data sources.',
@@ -132,30 +139,40 @@ export const usdaSearchFoods = tool('usda_search_foods', {
   ],
 
   async handler(input, ctx) {
+    const trimmedQuery = input.query.trim();
+    if (!trimmedQuery) {
+      throw ctx.fail('query_empty', 'Query cannot be empty or whitespace-only.', {
+        recovery: {
+          hint: 'Provide a food name, ingredient, or UPC/GTIN code as the query.',
+        },
+      });
+    }
+
     ctx.log.info('Searching foods', {
-      query: input.query,
+      query: trimmedQuery,
       dataType: input.dataType,
       pageSize: input.pageSize,
     });
 
-    const searchParams: Parameters<FdcService['searchFoods']>[0] = {
-      query: input.query,
-      dataType: input.dataType?.length ? input.dataType : ['SR Legacy'],
-      pageSize: input.pageSize,
-      pageNumber: input.pageNumber,
-    };
-    if (input.brandOwner?.trim()) searchParams.brandOwner = input.brandOwner.trim();
-    if (input.foodCategory?.trim()) searchParams.foodCategory = input.foodCategory.trim();
-
-    const result = await getFdcService().searchFoods(searchParams, ctx);
+    const result = await getFdcService().searchFoods(
+      {
+        query: trimmedQuery,
+        dataType: input.dataType?.length ? input.dataType : ['SR Legacy'],
+        pageSize: input.pageSize,
+        pageNumber: input.pageNumber,
+        ...(input.brandOwner?.trim() && { brandOwner: input.brandOwner.trim() }),
+        ...(input.foodCategory?.trim() && { foodCategory: input.foodCategory.trim() }),
+      },
+      ctx,
+    );
 
     if (result.foods.length === 0) {
       const dtLabel = (input.dataType ?? ['SR Legacy']).join(', ');
-      throw ctx.fail('no_results', `No foods matched "${input.query}" in ${dtLabel}.`, {
-        query: input.query,
+      throw ctx.fail('no_results', `No foods matched "${trimmedQuery}" in ${dtLabel}.`, {
+        query: trimmedQuery,
         dataType: input.dataType,
         recovery: {
-          hint: `No foods matched "${input.query}" in ${dtLabel}. Try a simpler query, check spelling, or add "Branded" to dataType.`,
+          hint: `No foods matched "${trimmedQuery}" in ${dtLabel}. Try a simpler query, check spelling, or add "Branded" to dataType.`,
         },
       });
     }

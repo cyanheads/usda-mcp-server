@@ -4,9 +4,7 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
-import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import {
   fetchWithTimeout,
   httpErrorFromResponse,
@@ -54,11 +52,14 @@ function normalizeNutrientFromDetail(raw: RawFoodNutrient): FoodNutrient | null 
   const unit = (raw.nutrient?.unitName ?? raw.unitName)?.trim() ?? '';
   const amount = raw.amount ?? raw.value;
   if (id == null || !name || amount == null) return null;
-  const result: FoodNutrient = { id, name, number, amount, unit };
-  if (raw.percentDailyValue != null) {
-    result.percentDailyValue = raw.percentDailyValue;
-  }
-  return result;
+  return {
+    id,
+    name,
+    number,
+    amount,
+    unit,
+    ...(raw.percentDailyValue != null && { percentDailyValue: raw.percentDailyValue }),
+  };
 }
 
 function normalizePortion(raw: RawFoodPortion): FoodPortion | null {
@@ -84,20 +85,19 @@ function normalizeSearchFood(raw: RawSearchFood): SearchResultFood {
     .map(normalizeNutrientFromSearch)
     .filter((n): n is NonNullable<typeof n> => n !== null);
 
-  const result: SearchResultFood = {
+  return {
     fdcId: raw.fdcId,
     description: raw.description,
     dataType: raw.dataType ?? 'Unknown',
     nutrients,
+    ...(raw.foodCategory && { foodCategory: raw.foodCategory }),
+    ...(raw.brandOwner && { brandOwner: raw.brandOwner }),
+    ...(raw.brandName && { brandName: raw.brandName }),
+    ...(raw.servingSize != null && { servingSize: raw.servingSize }),
+    ...(raw.servingSizeUnit && { servingSizeUnit: raw.servingSizeUnit }),
+    ...(raw.householdServingFullText && { householdServingFullText: raw.householdServingFullText }),
+    ...(raw.publishedDate && { publishedDate: raw.publishedDate }),
   };
-  if (raw.foodCategory) result.foodCategory = raw.foodCategory;
-  if (raw.brandOwner) result.brandOwner = raw.brandOwner;
-  if (raw.brandName) result.brandName = raw.brandName;
-  if (raw.servingSize != null) result.servingSize = raw.servingSize;
-  if (raw.servingSizeUnit) result.servingSizeUnit = raw.servingSizeUnit;
-  if (raw.householdServingFullText) result.householdServingFullText = raw.householdServingFullText;
-  if (raw.publishedDate) result.publishedDate = raw.publishedDate;
-  return result;
 }
 
 function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): FoodDetail {
@@ -114,20 +114,19 @@ function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): Foo
     .map(normalizePortion)
     .filter((p): p is FoodPortion => p !== null);
 
-  const result: FoodDetail = {
+  const category = normalizeFoodCategory(raw.foodCategory);
+  return {
     fdcId: raw.fdcId,
     description: raw.description,
     dataType: raw.dataType ?? 'Unknown',
     nutrients,
     portions,
+    ...(category && { foodCategory: category }),
+    ...(raw.publicationDate && { publicationDate: raw.publicationDate }),
+    ...(raw.brandOwner && { brandOwner: raw.brandOwner }),
+    ...(raw.brandName && { brandName: raw.brandName }),
+    ...(raw.ingredients && { ingredients: raw.ingredients }),
   };
-  const category = normalizeFoodCategory(raw.foodCategory);
-  if (category) result.foodCategory = category;
-  if (raw.publicationDate) result.publicationDate = raw.publicationDate;
-  if (raw.brandOwner) result.brandOwner = raw.brandOwner;
-  if (raw.brandName) result.brandName = raw.brandName;
-  if (raw.ingredients) result.ingredients = raw.ingredients;
-  return result;
 }
 
 // ---- Request helper ----
@@ -143,7 +142,6 @@ function fetchFdc<T>(
 ): Promise<T> {
   const apiKey = getServerConfig().fdcApiKey;
   const url = new URL(`${BASE_URL}${path}`);
-  url.searchParams.set('api_key', apiKey);
 
   if (options.params) {
     for (const [key, value] of Object.entries(options.params)) {
@@ -161,14 +159,15 @@ function fetchFdc<T>(
       const fetchOptions: RequestInit = {
         method: options.method ?? 'GET',
         signal: options.ctx.signal,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': apiKey,
+        },
       };
       if (options.body != null) {
         fetchOptions.body = JSON.stringify(options.body);
       }
 
-      // Context is safe to pass as RequestContext per framework docs —
-      // fetchWithTimeout/withRetry strip non-serializable fields before logging.
       const reqCtx = options.ctx as unknown as RequestContext;
       const response = await fetchWithTimeout(url.toString(), TIMEOUT_MS, reqCtx, {
         ...fetchOptions,
@@ -283,7 +282,7 @@ export class FdcService {
 
     const body: Record<string, unknown> = { fdcIds };
     if (nutrientFilter?.length) body.nutrients = nutrientFilter;
-    // Do NOT use format: "abridged" — abridged returns empty foodNutrients[]
+    // format:"abridged" returns empty foodNutrients[] — do not use
 
     const rawList = await fetchFdc<RawFoodDetail[]>('/foods', {
       method: 'POST',
@@ -291,7 +290,6 @@ export class FdcService {
       ctx,
     });
 
-    // Map returned foods by fdcId for lookup
     const returnedMap = new Map<number, RawFoodDetail>();
     for (const item of rawList) {
       if (item.fdcId) returnedMap.set(item.fdcId, item);
@@ -317,7 +315,7 @@ export class FdcService {
 
 let _service: FdcService | undefined;
 
-export function initFdcService(_config: AppConfig, _storage: StorageService): void {
+export function initFdcService(): void {
   _service = new FdcService();
 }
 

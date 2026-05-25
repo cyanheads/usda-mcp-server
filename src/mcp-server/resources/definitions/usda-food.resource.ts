@@ -10,7 +10,7 @@ import { getFdcService } from '@/services/fdc/fdc-service.js';
 export const usdaFoodResource = resource('usda://food/{fdcId}', {
   name: 'USDA Food Profile',
   description:
-    'Full nutrient profile for a specific food by FDC ID. Returns all available nutrients per 100g. Use usda_search_foods to discover FDC IDs. Same data as usda_get_food without portion scaling.',
+    'Full nutrient profile for a specific food by FDC ID. Returns all available nutrients per 100g — equivalent to usda_get_food without portion scaling. Use usda_search_foods to discover FDC IDs.',
   mimeType: 'application/json',
   params: z.object({
     fdcId: z.string().describe('FDC ID of the food (numeric string, e.g. "171077").'),
