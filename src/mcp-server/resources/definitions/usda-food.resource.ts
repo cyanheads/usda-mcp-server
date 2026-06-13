@@ -25,7 +25,7 @@ export const usdaFoodResource = resource('usda://food/{fdcId}', {
     },
     {
       reason: 'invalid_id',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'The fdcId parameter is not a valid integer.',
       recovery: 'Provide a numeric FDC ID from usda_search_foods results.',
     },

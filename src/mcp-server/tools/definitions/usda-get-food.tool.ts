@@ -131,13 +131,13 @@ export const usdaGetFood = tool('usda_get_food', {
     },
     {
       reason: 'quantity_without_unit',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'quantity is provided but unit is omitted.',
       recovery: 'Provide unit (g, oz, lb, kg, or serving) alongside quantity.',
     },
     {
       reason: 'no_portion_data',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.NotFound,
       when: 'unit="serving" was requested but the food has no portion data.',
       recovery: 'Use a gram-based unit (g, oz, lb, kg) instead of serving for this food.',
     },

@@ -10,6 +10,8 @@ import { allToolDefinitions } from './mcp-server/tools/definitions/index.js';
 import { initFdcService } from './services/fdc/fdc-service.js';
 
 await createApp({
+  name: 'usda-mcp-server',
+  title: 'usda-mcp-server',
   tools: allToolDefinitions,
   resources: allResourceDefinitions,
   prompts: [],

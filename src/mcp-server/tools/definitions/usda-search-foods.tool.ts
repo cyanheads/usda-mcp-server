@@ -121,11 +121,14 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       )
       .describe('Foods matching the search query.'),
   }),
+  enrichment: {
+    totalCount: z.number().describe('Total foods matching the query across all pages.'),
+  },
 
   errors: [
     {
       reason: 'query_empty',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'The query is empty or contains only whitespace.',
       recovery: 'Provide a food name, ingredient, or UPC/GTIN code as the query.',
     },
@@ -177,6 +180,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       });
     }
 
+    ctx.enrich.total(result.totalHits);
     return {
       totalHits: result.totalHits,
       currentPage: result.currentPage,
