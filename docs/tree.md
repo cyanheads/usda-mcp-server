@@ -1,6 +1,6 @@
 # usda-mcp-server - Directory Structure
 
-Generated on: 2026-05-25 01:43:41
+Generated on: 2026-06-13 04:45:30
 
 ```text
 usda-mcp-server/
@@ -23,12 +23,15 @@ usda-mcp-server/
 │   ├── build.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
+│   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
+│   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── release-github.ts
 │   └── tree.ts
 ├── skills/
 │   ├── add-app-tool/
@@ -55,6 +58,8 @@ usda-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-linter/
 │   │   └── SKILL.md
+│   ├── api-mirror/
+│   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
 │   │   │   ├── graph.md
@@ -73,6 +78,8 @@ usda-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-workers/
 │   │   └── SKILL.md
+│   ├── code-simplifier/
+│   │   └── SKILL.md
 │   ├── design-mcp-server/
 │   │   └── SKILL.md
 │   ├── field-test/
@@ -81,7 +88,12 @@ usda-mcp-server/
 │   │   └── SKILL.md
 │   ├── maintenance/
 │   │   └── SKILL.md
-│   ├── migrate-mcp-ts-template/
+│   ├── orchestrations/
+│   │   ├── workflows/
+│   │   │   ├── field-test-fix.md
+│   │   │   ├── fix-wrapup-release.md
+│   │   │   ├── greenfield-build.md
+│   │   │   └── maintenance-release.md
 │   │   └── SKILL.md
 │   ├── polish-docs-meta/
 │   │   ├── references/
@@ -99,6 +111,10 @@ usda-mcp-server/
 │   ├── security-pass/
 │   │   └── SKILL.md
 │   ├── setup/
+│   │   └── SKILL.md
+│   ├── techniques/
+│   │   ├── references/
+│   │   │   └── outline-on-overflow.md
 │   │   └── SKILL.md
 │   └── tool-defs-analysis/
 │       └── SKILL.md
