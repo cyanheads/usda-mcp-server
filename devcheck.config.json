@@ -12,5 +12,8 @@
   },
   "outdated": {
     "allowlist": ["typescript"]
+  },
+  "skillVersions": {
+    "ignore": ["report-issue-local"]
   }
 }
