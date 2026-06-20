@@ -1,6 +1,6 @@
 # usda-mcp-server - Directory Structure
 
-Generated on: 2026-06-13 04:45:30
+Generated on: 2026-06-20 19:02:45
 
 ```text
 usda-mcp-server/
@@ -21,6 +21,7 @@ usda-mcp-server/
 ├── scripts/
 │   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts
