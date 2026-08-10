@@ -1,0 +1,21 @@
+{
+  "name": "usda-mcp-server",
+  "version": "0.1.6",
+  "description": "Search foods, compare nutrients, and look up the full USDA FoodData Central database via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand"
+  },
+  "homepage": "https://github.com/cyanheads/usda-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/usda-mcp-server",
+  "license": "Apache-2.0",
+  "mcpServers": {
+    "usda-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "@cyanheads/usda-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "USDA_FDC_API_KEY": "your-api-key"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "usda-mcp-server": {
+    "command": "npx",
+    "args": ["-y", "@cyanheads/usda-mcp-server"],
+    "env": {
+      "MCP_TRANSPORT_TYPE": "stdio",
+      "USDA_FDC_API_KEY": "your-api-key"
+    }
+  }
+}

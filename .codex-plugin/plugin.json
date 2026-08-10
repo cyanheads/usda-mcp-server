@@ -1,0 +1,35 @@
+{
+  "name": "usda-mcp-server",
+  "version": "0.1.6",
+  "description": "Search foods, compare nutrients, and look up the full USDA FoodData Central database via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/usda-mcp-server#readme",
+  "repository": "git+https://github.com/cyanheads/usda-mcp-server.git",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "usda",
+    "fdc",
+    "fooddata-central",
+    "nutrition",
+    "food",
+    "nutrients"
+  ],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "usda-mcp-server",
+    "shortDescription": "Search foods, compare nutrients, and look up the full USDA FoodData Central database via MCP. STDIO or Streamable HTTP.",
+    "longDescription": "Five tools over USDA FoodData Central: search foods across the Foundation, SR Legacy, Survey, and Branded datasets, fetch one food or a batch by FDC ID, compare nutrient profiles across foods side by side, and list the nutrient vocabulary. Requires a free api.data.gov API key.",
+    "developerName": "cyanheads",
+    "category": "Data & Analytics",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/usda-mcp-server",
+    "defaultPrompt": []
+  }
+}
