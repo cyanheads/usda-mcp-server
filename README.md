@@ -19,6 +19,12 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://usda.caseyjhand.com/mcp](https://usda.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Tools
@@ -126,6 +132,23 @@ Agent-friendly output:
 - Cross-reference hints — FDC IDs and tool names in descriptions so agents know exactly which call to make next (search → get → compare workflow)
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://usda.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "usda-mcp-server": {
+      "type": "streamable-http",
+      "url": "https://usda.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file. See [data.gov API key signup](https://api.data.gov/signup/) to generate a free API key.
 
