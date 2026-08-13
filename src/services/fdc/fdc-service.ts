@@ -145,6 +145,12 @@ function fetchFdc<T>(
     method?: 'GET' | 'POST';
     body?: unknown;
     ctx: Context;
+    /**
+     * Non-2xx statuses this caller treats as a routine outcome. A listed status
+     * logs at `debug` instead of `error`; the thrown, status-mapped `McpError`
+     * is unchanged, so every declared error contract still behaves identically.
+     */
+    expectedStatuses?: number[];
   },
 ): Promise<T> {
   const apiKey = getServerConfig().fdcApiKey;
@@ -168,6 +174,7 @@ function fetchFdc<T>(
       const response = await fetchWithTimeout(url.toString(), TIMEOUT_MS, reqCtx, {
         ...fetchOptions,
         signal: options.ctx.signal,
+        ...(options.expectedStatuses && { expectedStatuses: options.expectedStatuses }),
       });
 
       if (!response.ok) {
@@ -252,7 +259,16 @@ export class FdcService {
   ): Promise<FoodDetail> {
     ctx.log.debug('Fetching FDC food detail', { fdcId });
 
-    const raw = await fetchFdc<RawFoodDetail>(`/food/${fdcId}`, { ctx });
+    /**
+     * A 404 here is the declared `not_found` outcome for a caller-supplied id,
+     * not a server fault, so it logs at `debug`. This is the only FDC path that
+     * 404s on a bad id — `/foods` omits it from a 200, and `/foods/search`
+     * answers 200 with `totalHits: 0` — so a 404 anywhere else stays an error.
+     */
+    const raw = await fetchFdc<RawFoodDetail>(`/food/${fdcId}`, {
+      ctx,
+      expectedStatuses: [404],
+    });
 
     // The API returns a 200 with the object even for missing IDs in some edge cases,
     // but fdcId would be 0 or description missing. The 404 path goes through httpErrorFromResponse.

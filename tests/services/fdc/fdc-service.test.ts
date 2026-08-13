@@ -5,7 +5,9 @@
  * @module tests/services/fdc/fdc-service.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createFetchMock, createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FdcService } from '@/services/fdc/fdc-service.js';
 import { createFdcFake, FIXTURE_NUTRIENT_COUNT } from '../../fdc-fake.js';
@@ -160,6 +162,74 @@ describe('FdcService', () => {
 
       for (const food of foods) {
         expect(food.nutrients.map((n) => n.id)).toEqual([PROTEIN]);
+      }
+    });
+  });
+
+  /**
+   * A 404 from the single-food endpoint is the declared `not_found` outcome for
+   * a caller-supplied id, so it must not inflate the error rate. The opt-out is
+   * scoped to that one request — `/foods` and `/foods/search` answer 200 for a
+   * bad id, so a 404 from either is a genuine anomaly and stays at `error`.
+   */
+  describe('expected-404 log level', () => {
+    /**
+     * `fetchWithTimeout` logs to the framework's module-level logger, not to
+     * `ctx.log`, so the severity it chose is only observable by spying there.
+     */
+    function spyOnFetchLogging() {
+      return {
+        error: vi.spyOn(logger, 'error').mockImplementation(() => {}),
+        debug: vi.spyOn(logger, 'debug').mockImplementation(() => {}),
+      };
+    }
+
+    /** Log calls whose payload carries the HTTP status the fetch layer saw. */
+    function statusCalls(spy: { mock: { calls: unknown[][] } }, status: number): unknown[][] {
+      return spy.mock.calls.filter(
+        (call) => (call[1] as { statusCode?: number } | undefined)?.statusCode === status,
+      );
+    }
+
+    afterEach(() => vi.restoreAllMocks());
+
+    it('logs a missing-food 404 at debug, not error', async () => {
+      const log = spyOnFetchLogging();
+
+      await expect(
+        service.getFoodDetail(999_999, undefined, createMockContext()),
+      ).rejects.toThrow();
+
+      expect(statusCalls(log.debug, 404)).toHaveLength(1);
+      expect(statusCalls(log.error, 404)).toHaveLength(0);
+    });
+
+    it('still throws the status-mapped error for a missing food', async () => {
+      await expect(
+        service.getFoodDetail(999_999, undefined, createMockContext()),
+      ).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
+    });
+
+    it('keeps a 404 on the batch path at error', async () => {
+      const batch404 = createFetchMock([
+        {
+          method: 'POST',
+          match: (request) => new URL(request.url).pathname.endsWith('/foods'),
+          respond: () => Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 }),
+        },
+      ]);
+      batch404.install();
+      try {
+        const log = spyOnFetchLogging();
+
+        await expect(
+          service.getFoodsBatch([KALE], [PROTEIN], createMockContext()),
+        ).rejects.toThrow();
+
+        expect(statusCalls(log.error, 404)).toHaveLength(1);
+        expect(statusCalls(log.debug, 404)).toHaveLength(0);
+      } finally {
+        batch404.restore();
       }
     });
   });

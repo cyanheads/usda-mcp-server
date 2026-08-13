@@ -159,6 +159,10 @@ export function createFdcFake(): FetchMockHarness {
       respond: (request) => {
         const url = new URL(request.url);
         const fdcId = Number(url.pathname.slice(`${BASE_PATH}/food/`.length));
+        // The single-food endpoint is the only FDC path that 404s on a bad id.
+        if (!isKnownFdcId(fdcId)) {
+          return Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
+        }
         return Response.json(
           applyUpstreamFilter(lookup(fdcId), url.searchParams.getAll('nutrients')),
         );
