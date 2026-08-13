@@ -9,10 +9,14 @@ import { usdaNutrientsResource } from '@/mcp-server/resources/definitions/usda-n
 
 // No service dependency — reads from static NUTRIENT_REFERENCE
 
+const { params: nutrientParams, list } = usdaNutrientsResource;
+if (!nutrientParams) throw new Error('usda://nutrients must declare params');
+if (!list) throw new Error('usda://nutrients must declare list()');
+
 describe('usdaNutrientsResource', () => {
   it('returns the nutrient reference list', async () => {
     const ctx = createMockContext();
-    const params = usdaNutrientsResource.params.parse({});
+    const params = nutrientParams.parse({});
     const result = await usdaNutrientsResource.handler(params, ctx);
 
     expect(result).toHaveProperty('nutrients');
@@ -22,7 +26,7 @@ describe('usdaNutrientsResource', () => {
 
   it('includes well-known nutrient IDs', async () => {
     const ctx = createMockContext();
-    const params = usdaNutrientsResource.params.parse({});
+    const params = nutrientParams.parse({});
     const result = await usdaNutrientsResource.handler(params, ctx);
     const { nutrients } = result as { nutrients: Array<{ id: number }> };
     const ids = nutrients.map((n) => n.id);
@@ -33,13 +37,20 @@ describe('usdaNutrientsResource', () => {
   });
 
   it('lists the nutrients resource', async () => {
-    const listing = await usdaNutrientsResource.list!();
+    // `list` receives the SDK's request-handler extra, not a Context — a minimal
+    // literal is enough for a listing that ignores it.
+    const listing = await list({
+      signal: new AbortController().signal,
+      requestId: 'test',
+      sendNotification: () => Promise.resolve(),
+      sendRequest: () => Promise.resolve({} as never),
+    });
     expect(listing.resources).toBeInstanceOf(Array);
     expect(listing.resources.length).toBeGreaterThan(0);
     for (const r of listing.resources) {
       expect(r).toHaveProperty('uri');
       expect(r).toHaveProperty('name');
     }
-    expect(listing.resources[0].uri).toBe('usda://nutrients');
+    expect(listing.resources[0]).toMatchObject({ uri: 'usda://nutrients' });
   });
 });
