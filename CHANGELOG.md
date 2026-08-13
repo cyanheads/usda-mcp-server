@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-08-13
+
+Log expected FDC 404s from usda_get_food's lookup at debug instead of error, so a missing FDC ID no longer inflates error-rate logs
+
 ## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-08-13
 
 Fix wholesale nutrient-reference id/number drift, restore nutrients[] filtering across all three lookup tools, and correct usda_compare_foods' default Sugars row; adopt mcp-ts-core ^0.11.5
