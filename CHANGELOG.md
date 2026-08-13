@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-08-13
+
+Fix wholesale nutrient-reference id/number drift, restore nutrients[] filtering across all three lookup tools, and correct usda_compare_foods' default Sugars row; adopt mcp-ts-core ^0.11.5
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-06-20
 
 Adopt mcp-ts-core ^0.10.9 — re-synced framework scripts, skills, and devcheck guards (new dependency-specifier check); no behavior changes

@@ -1,14 +1,23 @@
 # usda-mcp-server - Directory Structure
 
-Generated on: 2026-06-20 19:02:45
+Generated on: 2026-08-13 09:54:50
 
 ```text
 usda-mcp-server/
+├── .claude-plugin/
+│   └── plugin.json
+├── .codex-plugin/
+│   ├── mcp.json
+│   └── plugin.json
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       ├── bug_report.yml
-│       ├── config.yml
-│       └── feature_request.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
+│   ├── FUNDING.yml
+│   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -146,14 +155,22 @@ usda-mcp-server/
 │   ├── resources/
 │   │   ├── usda-food.resource.test.ts
 │   │   └── usda-nutrients.resource.test.ts
-│   └── tools/
-│       ├── usda-compare-foods.tool.test.ts
-│       ├── usda-get-food.tool.test.ts
-│       ├── usda-get-foods.tool.test.ts
-│       ├── usda-list-nutrients.tool.test.ts
-│       └── usda-search-foods.tool.test.ts
+│   ├── services/
+│   │   └── fdc/
+│   │       ├── fdc-service.test.ts
+│   │       └── nutrient-reference.test.ts
+│   ├── tools/
+│   │   ├── usda-compare-foods.integration.test.ts
+│   │   ├── usda-compare-foods.tool.test.ts
+│   │   ├── usda-get-food.tool.test.ts
+│   │   ├── usda-get-foods.tool.test.ts
+│   │   ├── usda-list-nutrients.tool.test.ts
+│   │   └── usda-search-foods.tool.test.ts
+│   ├── fdc-fake.ts
+│   └── helpers.ts
 ├── .dockerignore
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
 ├── AGENTS.md
