@@ -6,6 +6,10 @@
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaSearchFoods } from '@/mcp-server/tools/definitions/usda-search-foods.tool.js';
+import { firstText } from '../helpers.js';
+
+const { format } = usdaSearchFoods;
+if (!format) throw new Error('usda_search_foods must declare format()');
 
 // Mock the FDC service module so tests don't hit the network
 vi.mock('@/services/fdc/fdc-service.js', () => {
@@ -21,7 +25,7 @@ vi.mock('@/services/fdc/fdc-service.js', () => {
 
 async function getServiceMock() {
   const { getFdcService } = await import('@/services/fdc/fdc-service.js');
-  return getFdcService() as { searchFoods: ReturnType<typeof vi.fn> };
+  return getFdcService() as unknown as { searchFoods: ReturnType<typeof vi.fn> };
 }
 
 const MOCK_FOOD = {
@@ -44,6 +48,7 @@ const MOCK_SEARCH_RESULT = {
 describe('usdaSearchFoods', () => {
   beforeEach(async () => {
     const service = await getServiceMock();
+    service.searchFoods.mockClear();
     service.searchFoods.mockResolvedValue(MOCK_SEARCH_RESULT);
   });
 
@@ -55,8 +60,8 @@ describe('usdaSearchFoods', () => {
     expect(result.totalHits).toBe(1);
     expect(result.currentPage).toBe(1);
     expect(result.foods).toHaveLength(1);
-    expect(result.foods[0].fdcId).toBe(171077);
-    expect(result.foods[0].description).toContain('Chicken');
+    expect(result.foods[0]?.fdcId).toBe(171077);
+    expect(result.foods[0]?.description).toContain('Chicken');
   });
 
   it('defaults to SR Legacy when dataType is omitted', async () => {
@@ -97,6 +102,64 @@ describe('usdaSearchFoods', () => {
       expect.objectContaining({ brandOwner: 'Quaker' }),
       ctx,
     );
+  });
+
+  it('defaults to Branded when brandOwner is set and dataType is omitted', async () => {
+    const service = await getServiceMock();
+    const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+    const input = usdaSearchFoods.input.parse({ query: 'oats', brandOwner: 'Quaker' });
+    await usdaSearchFoods.handler(input, ctx);
+
+    expect(service.searchFoods).toHaveBeenCalledWith(
+      expect.objectContaining({ dataType: ['Branded'], brandOwner: 'Quaker' }),
+      ctx,
+    );
+  });
+
+  it('leaves an explicit non-Branded dataType alone when brandOwner is set', async () => {
+    const service = await getServiceMock();
+    const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+    const input = usdaSearchFoods.input.parse({
+      query: 'oats',
+      brandOwner: 'Quaker',
+      dataType: ['SR Legacy'],
+    });
+    await usdaSearchFoods.handler(input, ctx);
+
+    expect(service.searchFoods).toHaveBeenCalledWith(
+      expect.objectContaining({ dataType: ['SR Legacy'], brandOwner: 'Quaker' }),
+      ctx,
+    );
+  });
+
+  it('keeps the SR Legacy default when brandOwner is whitespace-only', async () => {
+    const service = await getServiceMock();
+    const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+    const input = usdaSearchFoods.input.parse({ query: 'oats', brandOwner: '   ' });
+    await usdaSearchFoods.handler(input, ctx);
+
+    expect(service.searchFoods).toHaveBeenCalledWith(
+      expect.objectContaining({ dataType: ['SR Legacy'] }),
+      ctx,
+    );
+    expect(service.searchFoods.mock.calls[0]?.[0]).not.toHaveProperty('brandOwner');
+  });
+
+  it('names the searched data sources when a brandOwner search finds nothing', async () => {
+    const service = await getServiceMock();
+    service.searchFoods.mockResolvedValue({
+      totalHits: 0,
+      currentPage: 1,
+      totalPages: 0,
+      foods: [],
+    });
+    const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+    const input = usdaSearchFoods.input.parse({ query: 'oats', brandOwner: 'Quaker' });
+
+    await expect(usdaSearchFoods.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'no_results', dataType: ['Branded'] },
+      message: expect.stringContaining('Branded'),
+    });
   });
 
   it('throws ctx.fail("query_empty") for whitespace-only query', async () => {
@@ -141,9 +204,7 @@ describe('usdaSearchFoods', () => {
         },
       ],
     };
-    const blocks = usdaSearchFoods.format!(output);
-    expect(blocks[0].type).toBe('text');
-    const text = blocks[0].text;
+    const text = firstText(format(output));
     expect(text).toContain('42 total hits');
     expect(text).toContain('page 2 of 5');
     expect(text).toContain('171077');
@@ -171,8 +232,7 @@ describe('usdaSearchFoods', () => {
         },
       ],
     };
-    const blocks = usdaSearchFoods.format!(output);
-    const text = blocks[0].text;
+    const text = firstText(format(output));
     expect(text).toContain('General Mills');
     expect(text).toContain('Nature Valley');
     expect(text).toContain('42');
@@ -190,7 +250,8 @@ describe('usdaSearchFoods', () => {
     const ctx = createMockContext({ errors: usdaSearchFoods.errors });
     const input = usdaSearchFoods.input.parse({ query: 'plain' });
     const result = await usdaSearchFoods.handler(input, ctx);
-    expect(result.foods[0].foodCategory).toBeUndefined();
-    expect(result.foods[0].brandOwner).toBeUndefined();
+    expect(result.foods).toHaveLength(1);
+    expect(result.foods[0]?.foodCategory).toBeUndefined();
+    expect(result.foods[0]?.brandOwner).toBeUndefined();
   });
 });

@@ -6,11 +6,12 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
+import type { FdcDataType } from '@/services/fdc/types.js';
 
 export const usdaSearchFoods = tool('usda_search_foods', {
   title: 'Search USDA Foods',
   description:
-    'Search USDA FoodData Central foods by keyword. Returns matching foods with FDC IDs and a preview of key nutrients (energy, protein, fat, carbs — not guaranteed complete). Use the returned fdcId with usda_get_food for the full nutrient profile, or usda_compare_foods for side-by-side comparisons. Defaults to SR Legacy (common whole foods with complete profiles); set dataType to ["Branded"] for packaged products, or include a UPC/GTIN code as the query. Pass brandOwner (e.g. "General Mills") to narrow branded results.',
+    'Search USDA FoodData Central foods by keyword. Returns matching foods with FDC IDs and a preview of key nutrients (energy, protein, fat, carbs — not guaranteed complete). Use the returned fdcId with usda_get_food for the full nutrient profile, or usda_compare_foods for side-by-side comparisons. When dataType is omitted, defaults to SR Legacy (common whole foods with complete profiles) — or to Branded when brandOwner is set, since only Branded records carry one. Set dataType to ["Branded"] for packaged products, or include a UPC/GTIN code as the query. Pass brandOwner (e.g. "General Mills") to narrow branded results.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   input: z.object({
     query: z
@@ -23,13 +24,13 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       .array(z.enum(['SR Legacy', 'Foundation', 'Survey (FNDDS)', 'Branded']))
       .optional()
       .describe(
-        'FDC data sources to search. Defaults to ["SR Legacy"] (common whole foods, complete nutrient profiles). Include "Branded" for packaged products. Multiple values allowed.',
+        'FDC data sources to search. Omitting this defaults to ["SR Legacy"] (common whole foods, complete nutrient profiles), or to ["Branded"] when brandOwner is set. Include "Branded" for packaged products. Multiple values allowed.',
       ),
     brandOwner: z
       .string()
       .optional()
       .describe(
-        'Filter branded results by brand owner name (e.g. "General Mills", "Kraft"). Only meaningful when Branded is in dataType.',
+        'Filter branded results by brand owner name (e.g. "General Mills", "Kraft"). Only Branded records carry one, so setting this defaults dataType to ["Branded"] unless dataType is given explicitly.',
       ),
     foodCategory: z
       .string()
@@ -151,32 +152,44 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       });
     }
 
+    const brandOwner = input.brandOwner?.trim();
+    /**
+     * Only Branded records carry a brandOwner, so an unqualified brand search
+     * would return nothing under the SR Legacy default.
+     */
+    const dataType: FdcDataType[] = input.dataType?.length
+      ? input.dataType
+      : brandOwner
+        ? ['Branded']
+        : ['SR Legacy'];
+
     ctx.log.info('Searching foods', {
       query: trimmedQuery,
-      dataType: input.dataType,
+      dataType,
       pageSize: input.pageSize,
     });
 
     const result = await getFdcService().searchFoods(
       {
         query: trimmedQuery,
-        dataType: input.dataType?.length ? input.dataType : ['SR Legacy'],
+        dataType,
         pageSize: input.pageSize,
         pageNumber: input.pageNumber,
-        ...(input.brandOwner?.trim() && { brandOwner: input.brandOwner.trim() }),
+        ...(brandOwner && { brandOwner }),
         ...(input.foodCategory?.trim() && { foodCategory: input.foodCategory.trim() }),
       },
       ctx,
     );
 
     if (result.foods.length === 0) {
-      const dtLabel = (input.dataType ?? ['SR Legacy']).join(', ');
+      const dtLabel = dataType.join(', ');
+      const widen = dataType.includes('Branded')
+        ? 'Try a simpler query or check spelling.'
+        : 'Try a simpler query, check spelling, or add "Branded" to dataType.';
       throw ctx.fail('no_results', `No foods matched "${trimmedQuery}" in ${dtLabel}.`, {
         query: trimmedQuery,
-        dataType: input.dataType,
-        recovery: {
-          hint: `No foods matched "${trimmedQuery}" in ${dtLabel}. Try a simpler query, check spelling, or add "Branded" to dataType.`,
-        },
+        dataType,
+        recovery: { hint: `No foods matched "${trimmedQuery}" in ${dtLabel}. ${widen}` },
       });
     }
 

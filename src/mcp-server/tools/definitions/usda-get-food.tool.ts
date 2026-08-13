@@ -32,7 +32,7 @@ export const usdaGetFood = tool('usda_get_food', {
       .min(1)
       .describe('FDC ID of the food. Use usda_search_foods to discover IDs.'),
     nutrients: z
-      .array(z.number().int())
+      .array(z.number().int().min(1))
       .optional()
       .describe(
         'Filter to specific nutrient IDs (e.g. [1003, 1004, 1005, 1008] for protein, fat, carbs, energy). Use usda_list_nutrients to look up IDs. Omit to return all available nutrients.',

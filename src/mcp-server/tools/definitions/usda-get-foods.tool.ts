@@ -18,7 +18,7 @@ export const usdaGetFoods = tool('usda_get_foods', {
       .max(20)
       .describe('FDC IDs to fetch — 2 to 20 IDs. Use usda_search_foods to discover IDs.'),
     nutrients: z
-      .array(z.number().int())
+      .array(z.number().int().min(1))
       .optional()
       .describe(
         'Filter to specific nutrient IDs (e.g. [1003, 1004, 1005, 1008]). Strongly recommended — full profiles can be large. Use usda_list_nutrients to look up IDs.',

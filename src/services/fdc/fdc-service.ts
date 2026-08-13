@@ -100,6 +100,14 @@ function normalizeSearchFood(raw: RawSearchFood): SearchResultFood {
   };
 }
 
+/**
+ * Applies the caller's nutrient filter locally, by FDC nutrient id.
+ *
+ * The filter is never forwarded to FDC: its `nutrients` parameter matches SR
+ * *numbers* (`"208"`), while every id this server hands out and accepts is an
+ * FDC nutrient *id* (`1008`). Sending ids upstream returns an empty
+ * `foodNutrients[]`, so the full profile is fetched and narrowed here instead.
+ */
 function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): FoodDetail {
   const allNutrients = (raw.foodNutrients ?? [])
     .map(normalizeNutrientFromDetail)
@@ -135,24 +143,12 @@ function fetchFdc<T>(
   path: string,
   options: {
     method?: 'GET' | 'POST';
-    params?: Record<string, string | string[] | number | number[] | undefined>;
     body?: unknown;
     ctx: Context;
   },
 ): Promise<T> {
   const apiKey = getServerConfig().fdcApiKey;
   const url = new URL(`${BASE_URL}${path}`);
-
-  if (options.params) {
-    for (const [key, value] of Object.entries(options.params)) {
-      if (value == null) continue;
-      if (Array.isArray(value)) {
-        for (const v of value) url.searchParams.append(key, String(v));
-      } else {
-        url.searchParams.set(key, String(value));
-      }
-    }
-  }
 
   return withRetry(
     async () => {
@@ -256,10 +252,7 @@ export class FdcService {
   ): Promise<FoodDetail> {
     ctx.log.debug('Fetching FDC food detail', { fdcId });
 
-    const params: Record<string, string | number[]> = {};
-    if (nutrientFilter?.length) params.nutrients = nutrientFilter;
-
-    const raw = await fetchFdc<RawFoodDetail>(`/food/${fdcId}`, { params, ctx });
+    const raw = await fetchFdc<RawFoodDetail>(`/food/${fdcId}`, { ctx });
 
     // The API returns a 200 with the object even for missing IDs in some edge cases,
     // but fdcId would be 0 or description missing. The 404 path goes through httpErrorFromResponse.
@@ -280,13 +273,10 @@ export class FdcService {
   }> {
     ctx.log.debug('Fetching FDC batch foods', { count: fdcIds.length });
 
-    const body: Record<string, unknown> = { fdcIds };
-    if (nutrientFilter?.length) body.nutrients = nutrientFilter;
     // format:"abridged" returns empty foodNutrients[] — do not use
-
     const rawList = await fetchFdc<RawFoodDetail[]>('/foods', {
       method: 'POST',
-      body,
+      body: { fdcIds },
       ctx,
     });
 

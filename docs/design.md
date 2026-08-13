@@ -39,7 +39,7 @@ Target workflows: answering nutrition questions ("how much protein in chicken br
 - The API has no nutrient-ranked search endpoint ("foods highest in X") — this requires fetching a search result set and sorting client-side, which is too expensive. Not included.
 - SR Legacy is the correct default for common whole foods. Branded is opt-in.
 - UPC/GTIN lookup: branded search accepts `query` as a UPC code — no separate endpoint.
-- The batch `/foods` endpoint accepts up to 20 FDC IDs (safe limit based on API behavior; abridged format returns empty nutrients so full format with `nutrients[]` filter is required).
+- The batch `/foods` endpoint accepts up to 20 FDC IDs (safe limit based on API behavior; abridged format returns empty nutrients so full format is required).
 
 ## Services
 
@@ -76,8 +76,8 @@ Search foods by keyword. The agent's entry point for resolving a food name to FD
 
 **Input schema:**
 - `query: string` — search terms (required). Can be a food name, UPC/GTIN code (for branded), or ingredient.
-- `dataType: enum[]` optional, default `["SR Legacy"]` — which FDC data sources to search. Options: `"SR Legacy"`, `"Foundation"`, `"Survey (FNDDS)"`, `"Branded"`. Multiple allowed. Defaults to SR Legacy because it's the most complete and least noisy for common foods.
-- `brandOwner: string` optional — filter branded results by brand owner name (e.g., "General Mills"). Only meaningful when Branded is in `dataType`.
+- `dataType: enum[]` optional, default `["SR Legacy"]` (or `["Branded"]` when `brandOwner` is set) — which FDC data sources to search. Options: `"SR Legacy"`, `"Foundation"`, `"Survey (FNDDS)"`, `"Branded"`. Multiple allowed. Defaults to SR Legacy because it's the most complete and least noisy for common foods.
+- `brandOwner: string` optional — filter branded results by brand owner name (e.g., "General Mills"). Only Branded records carry one, so supplying it selects Branded unless `dataType` is given explicitly.
 - `foodCategory: string` optional — filter by food category (e.g., "Poultry Products", "Vegetables and Vegetable Products").
 - `pageSize: number` optional, default 10, max 50 — results per page.
 - `pageNumber: number` optional, default 1.
@@ -187,7 +187,7 @@ Side-by-side nutrient comparison for 2–5 foods. Takes FDC IDs and returns a st
 
 **Input schema:**
 - `fdcIds: number[]` — 2 to 5 FDC IDs to compare.
-- `nutrients: number[]` optional — which nutrients to include in the comparison. Defaults to the 12 most commonly compared: energy (1008), protein (1003), total fat (1004), saturated fat (1258), carbohydrate (1005), fiber (1079), sugars (1063), sodium (1093), potassium (1092), calcium (1087), iron (1089), vitamin C (1162). Provide this to get different nutrients.
+- `nutrients: number[]` optional — which nutrients to include in the comparison. Defaults to the 12 most commonly compared: energy (1008), protein (1003), total fat (1004), saturated fat (1258), carbohydrate (1005), fiber (1079), total sugars (2000), sodium (1093), potassium (1092), calcium (1087), iron (1089), vitamin C (1162). Provide this to get different nutrients.
 - `quantity: number` optional, default 100 — gram basis for comparison. All values scaled to this many grams.
 - `unit: enum` optional, default `"g"` — unit for `quantity`: `"g"` | `"oz"` | `"lb"` | `"kg"`.
 
@@ -335,6 +335,20 @@ Both use the same underlying batch API call. The formatting and output schema di
 
 `usda_get_foods` is the "fetch raw data for these IDs" tool — it's a batch data fetch, not a nutrition question. Agents calling it are doing their own analysis. Adding scaling would complicate the schema (per-food scale params?) with little gain. For scaled comparisons, `usda_compare_foods` with `quantity`+`unit` handles it.
 
+### Nutrient filtering happens locally, never upstream
+
+The `nutrients[]` param on `usda_get_food`, `usda_get_foods`, and `usda_compare_foods` takes FDC nutrient **ids** — the identifiers `usda_list_nutrients` hands out. FDC's own `nutrients` query/body parameter takes SR **numbers**, so forwarding the caller's ids matched nothing and every filtered call came back empty.
+
+The filter is therefore applied only in `normalizeFoodDetail`, against `id`. The alternative — translating id → number through the static nutrient reference table — was rejected: that table's ids are known to disagree with live FDC for some entries, which would make response completeness depend on reference data that is independently in doubt.
+
+Cost: a filtered request now fetches the full profile upstream (~40 KB vs ~3 KB for a two-nutrient SR Legacy food). The client-facing response is unaffected — it is still narrowed to the requested ids — so `nutrients[]` remains the right advice for keeping agent context small. Measured at the 20-id ceiling of `usda_get_foods`, an unfiltered batch returns in ~2.5 s against the 15 s timeout, so the extra bytes stay well inside budget.
+
+### The default Sugars row uses id 2000, not 1063
+
+FDC carries total sugars under two distinct nutrients: `2000` `Total Sugars` (number `269`) and `1063` `Sugars, Total` (number `269.3`). Both are correct entries and both belong in the reference table, but they are reported by different data types — sampled across 146 foods, `1063` appeared only in Foundation records, while `2000` covered SR Legacy, Survey (FNDDS), and Branded.
+
+`DEFAULT_COMPARE_NUTRIENTS` therefore requests `2000`. Because `usda_search_foods` defaults to SR Legacy, the documented search → compare workflow would otherwise report the Sugars row missing on every default comparison while the value sat in the payload under the other id. Callers comparing Foundation foods can still request `1063` explicitly, and a food genuinely lacking it is still reported through `missingData[]`.
+
 ### Data source defaults
 
 `usda_search_foods` defaults to `dataType: ["SR Legacy"]` because:
@@ -344,6 +358,8 @@ Both use the same underlying batch API call. The formatting and output schema di
 - Branded search burns more rate-limit budget due to hit volume
 
 Agents that need branded can opt in explicitly. The tool description makes this choice visible.
+
+**Exception: `brandOwner` implies Branded.** When `brandOwner` is set and `dataType` is omitted, the default flips to `["Branded"]`. Only Branded records carry a `brandOwner` field, so the SR Legacy default made that combination structurally unmatchable — a brand search would return zero hits for any brand, on any query. An explicit `dataType` always wins, including a non-Branded one; that combination still resolves through the normal `no_results` path rather than a new error.
 
 ---
 
@@ -376,7 +392,7 @@ Agents that need branded can opt in explicitly. The tool description makes this 
 **Search parameters:** `query`, `dataType[]`, `foodCategory`, `brandOwner`, `pageSize` (default 50), `pageNumber` (1-based), `sortBy`, `sortOrder`, `requireAllWords`.
 
 **Batch `/foods` notes:**
-- Pass `nutrients: [id1, id2, ...]` to filter nutrient output (without this, all nutrients are returned, large payload)
+- The `nutrients` filter — on `/foods` and `/food/{fdcId}` alike — matches SR **numbers** (`208`, `203`), not FDC nutrient **ids** (`1008`, `1003`). Sending ids returns an empty `foodNutrients[]`, so this server does not forward the filter (see "Nutrient filtering" under Design Decisions)
 - Do NOT use `format: "abridged"` — abridged returns empty `foodNutrients[]` despite having a size advantage
 - Safe batch limit: 20 FDC IDs per request
 

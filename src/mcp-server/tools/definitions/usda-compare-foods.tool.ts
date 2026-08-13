@@ -15,7 +15,7 @@ const DEFAULT_COMPARE_NUTRIENTS = [
   1258, // Saturated fat
   1005, // Carbohydrate
   1079, // Fiber
-  1063, // Sugars
+  2000, // Total Sugars — not 1063 "Sugars, Total", which only Foundation foods report
   1093, // Sodium
   1092, // Potassium
   1087, // Calcium
@@ -49,10 +49,10 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       .max(5)
       .describe('FDC IDs to compare — 2 to 5 foods. Use usda_search_foods to discover IDs.'),
     nutrients: z
-      .array(z.number().int())
+      .array(z.number().int().min(1))
       .optional()
       .describe(
-        'Nutrient IDs to include in the comparison. Defaults to the 12 most common: energy (1008), protein (1003), total fat (1004), saturated fat (1258), carbohydrate (1005), fiber (1079), sugars (1063), sodium (1093), potassium (1092), calcium (1087), iron (1089), vitamin C (1162). Use usda_list_nutrients to look up other IDs.',
+        'Nutrient IDs to include in the comparison. Defaults to the 12 most common: energy (1008), protein (1003), total fat (1004), saturated fat (1258), carbohydrate (1005), fiber (1079), total sugars (2000), sodium (1093), potassium (1092), calcium (1087), iron (1089), vitamin C (1162). Use usda_list_nutrients to look up other IDs.',
       ),
     quantity: z
       .number()

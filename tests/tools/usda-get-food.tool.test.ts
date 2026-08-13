@@ -6,6 +6,10 @@
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaGetFood } from '@/mcp-server/tools/definitions/usda-get-food.tool.js';
+import { firstText } from '../helpers.js';
+
+const { format } = usdaGetFood;
+if (!format) throw new Error('usda_get_food must declare format()');
 
 vi.mock('@/services/fdc/fdc-service.js', () => {
   const mockService = {
@@ -20,7 +24,7 @@ vi.mock('@/services/fdc/fdc-service.js', () => {
 
 async function getServiceMock() {
   const { getFdcService } = await import('@/services/fdc/fdc-service.js');
-  return getFdcService() as { getFoodDetail: ReturnType<typeof vi.fn> };
+  return getFdcService() as unknown as { getFoodDetail: ReturnType<typeof vi.fn> };
 }
 
 const MOCK_FOOD_DETAIL = {
@@ -49,6 +53,19 @@ describe('usdaGetFood', () => {
 
   it('schema rejects negative fdcId', () => {
     expect(() => usdaGetFood.input.parse({ fdcId: -1 })).toThrow();
+  });
+
+  it('schema rejects non-positive nutrient IDs', () => {
+    expect(() => usdaGetFood.input.parse({ fdcId: 1, nutrients: [-1] })).toThrow();
+    expect(() => usdaGetFood.input.parse({ fdcId: 1, nutrients: [0] })).toThrow();
+    expect(() => usdaGetFood.input.parse({ fdcId: 1, nutrients: [1008, 0] })).toThrow();
+  });
+
+  it('schema accepts positive nutrient IDs and an omitted filter', () => {
+    expect(usdaGetFood.input.parse({ fdcId: 1, nutrients: [1008, 1003] }).nutrients).toEqual([
+      1008, 1003,
+    ]);
+    expect(usdaGetFood.input.parse({ fdcId: 1 }).nutrients).toBeUndefined();
   });
 
   it('schema rejects non-positive quantity', () => {
@@ -174,9 +191,7 @@ describe('usdaGetFood', () => {
       dataType: 'SR Legacy',
       nutrients: [{ id: 1003, name: 'Protein', number: '203', amount: 22.5, unit: 'G' }],
     };
-    const blocks = usdaGetFood.format!(output);
-    expect(blocks[0].type).toBe('text');
-    const text = blocks[0].text;
+    const text = firstText(format(output));
     expect(text).toContain('171077');
     expect(text).toContain('Chicken breast raw');
     expect(text).toContain('1003');
@@ -192,8 +207,7 @@ describe('usdaGetFood', () => {
       scaledTo: { quantity: 200, unit: 'g', gramWeight: 200 },
       nutrients: [],
     };
-    const blocks = usdaGetFood.format!(output);
-    const text = blocks[0].text;
+    const text = firstText(format(output));
     expect(text).toContain('200');
     expect(text).toContain('200.0g');
   });

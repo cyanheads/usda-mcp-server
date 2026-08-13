@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.6-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/usda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/usda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/usda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.7-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/usda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/usda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/usda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -45,7 +45,7 @@ Search USDA FoodData Central foods by keyword, UPC/GTIN code, or ingredient.
 
 - Covers all FDC data sources: SR Legacy (common whole foods, complete nutrient profiles), Foundation, Survey FNDDS, and Branded (packaged products)
 - Defaults to SR Legacy; include `"Branded"` in `dataType` for packaged products or UPC lookup
-- Brand owner filter to narrow branded results (e.g. `"General Mills"`)
+- Brand owner filter to narrow branded results (e.g. `"General Mills"`) — setting `brandOwner` without `dataType` searches Branded, since only Branded records carry a brand owner
 - Food category filter (e.g. `"Poultry Products"`, `"Vegetables and Vegetable Products"`)
 - Pagination via `pageSize` (up to 50) and `pageNumber`
 - Returns FDC IDs and a preview of key nutrients (energy, protein, fat, carbs) — use `usda_get_food` for the full profile
@@ -80,7 +80,7 @@ Batch nutrient fetch for 2–20 FDC IDs.
 Side-by-side nutrient comparison for 2–5 foods.
 
 - Returns a pivot table — one row per nutrient, one column per food — and formats it as a markdown table
-- Defaults to the 12 most commonly compared nutrients (energy, protein, fat, saturated fat, carbs, fiber, sugars, sodium, potassium, calcium, iron, vitamin C)
+- Defaults to the 12 most commonly compared nutrients (energy, protein, fat, saturated fat, carbs, fiber, total sugars, sodium, potassium, calcium, iron, vitamin C)
 - Pass custom `nutrients[]` for specific comparisons (e.g. just iron and vitamin C)
 - All values scaled to a common gram basis (default 100g; override with `quantity` + `unit`)
 - Proceeds with valid foods when some IDs aren't found — only fails when fewer than 2 IDs return data
@@ -217,7 +217,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 USDA_FDC_API_KEY=your-api-key bun run
 ### Prerequisites
 
 - [Bun v1.3.2](https://bun.sh/) or higher (or Node.js v24+).
-- A free USDA FDC API key — register at [api.data.gov/signup](https://api.data.gov/signup/). The key is required; without it the server will not start.
+- A free USDA FDC API key — register at [api.data.gov/signup](https://api.data.gov/signup/). Required for food search, lookup, and comparison calls; `usda_list_nutrients` and the static nutrient reference work without it.
 
 ### Installation
 
@@ -250,7 +250,7 @@ cp .env.example .env
 
 | Variable | Description | Default |
 |:---------|:------------|:--------|
-| `USDA_FDC_API_KEY` | **Required.** USDA FoodData Central API key from [api.data.gov](https://api.data.gov/signup/). | — |
+| `USDA_FDC_API_KEY` | **Required for FoodData Central-backed tools** (search, get, batch, compare) — not for startup or `usda_list_nutrients`. Get a free key at [api.data.gov](https://api.data.gov/signup/). | — |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |

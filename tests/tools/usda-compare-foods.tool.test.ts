@@ -6,6 +6,10 @@
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaCompareFoods } from '@/mcp-server/tools/definitions/usda-compare-foods.tool.js';
+import { firstText } from '../helpers.js';
+
+const { format } = usdaCompareFoods;
+if (!format) throw new Error('usda_compare_foods must declare format()');
 
 vi.mock('@/services/fdc/fdc-service.js', () => {
   const mockService = {
@@ -20,7 +24,7 @@ vi.mock('@/services/fdc/fdc-service.js', () => {
 
 async function getServiceMock() {
   const { getFdcService } = await import('@/services/fdc/fdc-service.js');
-  return getFdcService() as { getFoodsBatch: ReturnType<typeof vi.fn> };
+  return getFdcService() as unknown as { getFoodsBatch: ReturnType<typeof vi.fn> };
 }
 
 const SPINACH = {
@@ -47,6 +51,15 @@ const KALE = {
   portions: [],
 };
 
+/** FDC nutrient 2000 "Total Sugars" — the id SR Legacy foods actually report. */
+const sugars = (amount: number) => ({
+  id: 2000,
+  name: 'Total Sugars',
+  number: '269',
+  amount,
+  unit: 'G',
+});
+
 describe('usdaCompareFoods', () => {
   beforeEach(async () => {
     const service = await getServiceMock();
@@ -56,6 +69,18 @@ describe('usdaCompareFoods', () => {
   it('schema rejects fdcIds containing 0 or negative values', () => {
     expect(() => usdaCompareFoods.input.parse({ fdcIds: [0, 168421] })).toThrow();
     expect(() => usdaCompareFoods.input.parse({ fdcIds: [-1, 168421] })).toThrow();
+  });
+
+  it('schema rejects non-positive nutrient IDs', () => {
+    expect(() => usdaCompareFoods.input.parse({ fdcIds: [1, 2], nutrients: [-1] })).toThrow();
+    expect(() => usdaCompareFoods.input.parse({ fdcIds: [1, 2], nutrients: [0] })).toThrow();
+  });
+
+  it('schema accepts positive nutrient IDs and an omitted filter', () => {
+    expect(
+      usdaCompareFoods.input.parse({ fdcIds: [1, 2], nutrients: [1008, 1003] }).nutrients,
+    ).toEqual([1008, 1003]);
+    expect(usdaCompareFoods.input.parse({ fdcIds: [1, 2] }).nutrients).toBeUndefined();
   });
 
   it('schema rejects zero or negative quantity', () => {
@@ -179,9 +204,7 @@ describe('usdaCompareFoods', () => {
       ],
       nutrients: [{ id: 1089, name: 'Iron, Fe', unit: 'MG', values: [2.71, 1.47] }],
     };
-    const blocks = usdaCompareFoods.format!(output);
-    expect(blocks[0].type).toBe('text');
-    const text = blocks[0].text;
+    const text = firstText(format(output));
     // Table structure
     expect(text).toContain('Spinach, raw');
     expect(text).toContain('Kale, raw');
@@ -206,10 +229,62 @@ describe('usdaCompareFoods', () => {
         { fdcId: 168462, nutrientId: 1162 },
       ],
     };
-    const blocks = usdaCompareFoods.format!(output);
-    const text = blocks[0].text;
+    const text = firstText(format(output));
     expect(text).toContain('Missing data');
     expect(text).toContain('999');
     expect(text).toContain('1162');
+  });
+
+  /**
+   * FDC splits total sugars across two distinct nutrients: 2000 "Total Sugars"
+   * (number 269), which SR Legacy, Survey (FNDDS) and Branded foods report, and
+   * 1063 "Sugars, Total" (number 269.3), which effectively only Foundation
+   * foods carry. The default set must request the one the common data types
+   * report, or every default comparison buries a sugars value the food has.
+   */
+  describe('default sugars nutrient', () => {
+    const WITH_TOTAL_SUGARS = [
+      { ...SPINACH, nutrients: [...SPINACH.nutrients, sugars(0.42)] },
+      { ...KALE, nutrients: [...KALE.nutrients, sugars(0.99)] },
+    ];
+
+    beforeEach(async () => {
+      const service = await getServiceMock();
+      service.getFoodsBatch.mockResolvedValue({ foods: WITH_TOTAL_SUGARS, failed: [] });
+    });
+
+    it('populates the sugars row for SR Legacy foods under the default filter', async () => {
+      const ctx = createMockContext({ errors: usdaCompareFoods.errors });
+      const input = usdaCompareFoods.input.parse({ fdcIds: [168462, 168421] });
+      const result = await usdaCompareFoods.handler(input, ctx);
+
+      expect(result.nutrients.find((n) => n.id === 2000)?.values).toEqual([0.42, 0.99]);
+      expect(result.missingData ?? []).not.toContainEqual(
+        expect.objectContaining({ nutrientId: 1063 }),
+      );
+    });
+
+    it('renders the sugars row on the content[] path', async () => {
+      const ctx = createMockContext({ errors: usdaCompareFoods.errors });
+      const input = usdaCompareFoods.input.parse({ fdcIds: [168462, 168421] });
+      const text = firstText(format(await usdaCompareFoods.handler(input, ctx)));
+
+      expect(text).toContain('Total Sugars');
+      expect(text).toContain('ID:2000');
+      expect(text).toContain('0.99');
+      expect(text).not.toContain('1063');
+    });
+
+    it('still reports an explicitly requested 1063 as missing when absent', async () => {
+      const ctx = createMockContext({ errors: usdaCompareFoods.errors });
+      const input = usdaCompareFoods.input.parse({ fdcIds: [168462, 168421], nutrients: [1063] });
+      const result = await usdaCompareFoods.handler(input, ctx);
+
+      expect(result.nutrients).toEqual([]);
+      expect(result.missingData).toEqual([
+        { fdcId: 168462, nutrientId: 1063 },
+        { fdcId: 168421, nutrientId: 1063 },
+      ]);
+    });
   });
 });
