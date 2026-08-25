@@ -5,12 +5,7 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
-import {
-  fetchWithTimeout,
-  httpErrorFromResponse,
-  type RequestContext,
-  withRetry,
-} from '@cyanheads/mcp-ts-core/utils';
+import { fetchWithTimeout, httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import type {
   FdcDataType,
@@ -170,8 +165,7 @@ function fetchFdc<T>(
         fetchOptions.body = JSON.stringify(options.body);
       }
 
-      const reqCtx = options.ctx as unknown as RequestContext;
-      const response = await fetchWithTimeout(url.toString(), TIMEOUT_MS, reqCtx, {
+      const response = await fetchWithTimeout(url.toString(), TIMEOUT_MS, options.ctx, {
         ...fetchOptions,
         signal: options.ctx.signal,
         ...(options.expectedStatuses && { expectedStatuses: options.expectedStatuses }),
@@ -195,7 +189,7 @@ function fetchFdc<T>(
     },
     {
       operation: `FdcService${path}`,
-      context: options.ctx as unknown as RequestContext,
+      context: options.ctx,
       baseDelayMs: 1000,
       signal: options.ctx.signal,
     },

@@ -11,6 +11,13 @@ export const usdaNutrientsResource = resource('usda://nutrients', {
   description:
     'Access the complete FDC nutrient reference — all ~150 tracked nutrients with their numeric IDs, names, SR reference numbers, units, and categories. Use to resolve nutrient names to FDC IDs for the nutrients[] filter on usda_get_food, usda_get_foods, usda_compare_foods, and usda_list_nutrients.',
   mimeType: 'application/json',
+  /**
+   * The nutrient table is bundled at build time and never varies by caller, so
+   * a 2026-07-28 client may hold it for the life of the deployed version. One
+   * hour is well inside that, and the scope is public because every tenant gets
+   * byte-identical bytes.
+   */
+  cacheHint: { ttlMs: 3_600_000, cacheScope: 'public' },
   params: z.object({}),
 
   // biome-ignore lint/suspicious/useAwait: framework requires async handler signature

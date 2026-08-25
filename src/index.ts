@@ -12,6 +12,18 @@ import { initFdcService } from './services/fdc/fdc-service.js';
 await createApp({
   name: 'usda-mcp-server',
   title: 'usda-mcp-server',
+  /**
+   * The listing surfaces are fixed at build time — five tools, two resources,
+   * no prompts, no scope-dependent filtering — so a 2026-07-28 client can hold
+   * them publicly for an hour. `resources/read` is deliberately absent: the
+   * food resource proxies live FDC records, and only the bundled nutrient
+   * reference is cacheable, which it declares itself.
+   */
+  cacheHints: {
+    'tools/list': { ttlMs: 3_600_000, cacheScope: 'public' },
+    'resources/list': { ttlMs: 3_600_000, cacheScope: 'public' },
+    'resources/templates/list': { ttlMs: 3_600_000, cacheScope: 'public' },
+  },
   tools: allToolDefinitions,
   resources: allResourceDefinitions,
   prompts: [],

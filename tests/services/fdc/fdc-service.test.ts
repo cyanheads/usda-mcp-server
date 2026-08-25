@@ -184,10 +184,16 @@ describe('FdcService', () => {
       };
     }
 
-    /** Log calls whose payload carries the HTTP status the fetch layer saw. */
+    /**
+     * Log calls whose payload carries the HTTP status the fetch layer saw. The
+     * fetch layer attaches it through `withExtra`, so it lands under the
+     * context's `extra` bag — flattened again only when the line is emitted.
+     */
     function statusCalls(spy: { mock: { calls: unknown[][] } }, status: number): unknown[][] {
       return spy.mock.calls.filter(
-        (call) => (call[1] as { statusCode?: number } | undefined)?.statusCode === status,
+        (call) =>
+          (call[1] as { extra?: { statusCode?: number } } | undefined)?.extra?.statusCode ===
+          status,
       );
     }
 

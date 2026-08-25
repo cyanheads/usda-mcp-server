@@ -41,6 +41,12 @@ describe('usdaFoodResource', () => {
     service.getFoodDetail.mockResolvedValue(MOCK_FOOD_DETAIL);
   });
 
+  it('declares no cache hint — it proxies live FDC records', () => {
+    // Deliberate: a TTL here would let a client serve a stale profile for a
+    // food USDA has since revised. Only the bundled nutrient table is cacheable.
+    expect(usdaFoodResource.cacheHint).toBeUndefined();
+  });
+
   it('returns food detail for a valid FDC ID', async () => {
     const service = await getServiceMock();
     const ctx = createMockContext({ errors: usdaFoodResource.errors });
