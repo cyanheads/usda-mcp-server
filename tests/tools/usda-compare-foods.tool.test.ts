@@ -83,6 +83,25 @@ describe('usdaCompareFoods', () => {
     expect(usdaCompareFoods.input.parse({ fdcIds: [1, 2] }).nutrients).toBeUndefined();
   });
 
+  describe('comparison size boundaries', () => {
+    /**
+     * 2–5 foods is the declared window — the table has one column per food, so
+     * one past the cap must be refused rather than rendered off the edge.
+     */
+    it('accepts the smallest and largest declared comparison', () => {
+      expect(usdaCompareFoods.input.parse({ fdcIds: [1, 2] }).fdcIds).toHaveLength(2);
+      expect(usdaCompareFoods.input.parse({ fdcIds: [1, 2, 3, 4, 5] }).fdcIds).toHaveLength(5);
+    });
+
+    it('rejects a single id — a comparison needs something to compare against', () => {
+      expect(() => usdaCompareFoods.input.parse({ fdcIds: [168421] })).toThrow();
+    });
+
+    it('rejects one past the cap rather than silently dropping a column', () => {
+      expect(() => usdaCompareFoods.input.parse({ fdcIds: [1, 2, 3, 4, 5, 6] })).toThrow();
+    });
+  });
+
   it('schema rejects zero or negative quantity', () => {
     expect(() => usdaCompareFoods.input.parse({ fdcIds: [168462, 168421], quantity: 0 })).toThrow();
     expect(() =>

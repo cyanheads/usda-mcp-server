@@ -190,6 +190,56 @@ describe('usdaSearchFoods', () => {
     });
   });
 
+  describe('pagination boundaries', () => {
+    it('applies the documented pageSize and pageNumber defaults', () => {
+      const input = usdaSearchFoods.input.parse({ query: 'kale' });
+
+      expect(input.pageSize).toBe(10);
+      expect(input.pageNumber).toBe(1);
+    });
+
+    it('accepts the declared pageSize edges and rejects one past the cap', () => {
+      expect(usdaSearchFoods.input.parse({ query: 'kale', pageSize: 1 }).pageSize).toBe(1);
+      expect(usdaSearchFoods.input.parse({ query: 'kale', pageSize: 50 }).pageSize).toBe(50);
+      expect(() => usdaSearchFoods.input.parse({ query: 'kale', pageSize: 51 })).toThrow();
+    });
+
+    it('rejects a page number below the 1-based floor', () => {
+      expect(() => usdaSearchFoods.input.parse({ query: 'kale', pageNumber: 0 })).toThrow();
+      expect(() => usdaSearchFoods.input.parse({ query: 'kale', pageNumber: -1 })).toThrow();
+    });
+
+    it('forwards pageSize and pageNumber to the service unchanged', async () => {
+      const service = await getServiceMock();
+      const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+      const input = usdaSearchFoods.input.parse({ query: 'kale', pageSize: 50, pageNumber: 3 });
+      await usdaSearchFoods.handler(input, ctx);
+
+      expect(service.searchFoods).toHaveBeenCalledWith(
+        expect.objectContaining({ pageSize: 50, pageNumber: 3 }),
+        ctx,
+      );
+    });
+
+    it('throws no_results for a page past the end rather than an empty success', async () => {
+      const service = await getServiceMock();
+      // FDC answers a past-the-end page with 200 and an empty foods[], keeping
+      // the real totalHits — so emptiness, not the count, is the signal.
+      service.searchFoods.mockResolvedValue({
+        totalHits: 12,
+        currentPage: 99,
+        totalPages: 2,
+        foods: [],
+      });
+      const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+      const input = usdaSearchFoods.input.parse({ query: 'kale', pageNumber: 99 });
+
+      await expect(usdaSearchFoods.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'no_results' },
+      });
+    });
+  });
+
   it('formats output with totalHits, pagination, and food rows', () => {
     const output = {
       totalHits: 42,

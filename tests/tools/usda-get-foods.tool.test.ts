@@ -62,6 +62,48 @@ describe('usdaGetFoods', () => {
     expect(usdaGetFoods.input.parse({ fdcIds: [1, 2] }).nutrients).toBeUndefined();
   });
 
+  describe('batch size boundaries', () => {
+    /** `count` distinct positive FDC ids — the values are irrelevant, the length is not. */
+    const ids = (count: number) => Array.from({ length: count }, (_v, i) => i + 1);
+
+    /** The declared window is 2–20 ids; one past either edge must not reach the API. */
+    it('accepts the smallest and largest declared batch', () => {
+      expect(usdaGetFoods.input.parse({ fdcIds: [1, 2] }).fdcIds).toHaveLength(2);
+      expect(usdaGetFoods.input.parse({ fdcIds: ids(20) }).fdcIds).toHaveLength(20);
+    });
+
+    it('rejects a single id — usda_get_food covers that case', () => {
+      expect(() => usdaGetFoods.input.parse({ fdcIds: [171077] })).toThrow();
+    });
+
+    it('rejects one past the cap rather than silently truncating the batch', () => {
+      expect(() => usdaGetFoods.input.parse({ fdcIds: ids(21) })).toThrow();
+    });
+  });
+
+  it('reports an all-missing batch as empty on both consumption paths', async () => {
+    const service = await getServiceMock();
+    const failed = [
+      { fdcId: 999_998, error: 'FDC ID 999998 not found or returned no data.' },
+      { fdcId: 999_999, error: 'FDC ID 999999 not found or returned no data.' },
+    ];
+    service.getFoodsBatch.mockResolvedValue({ foods: [], failed });
+    const ctx = createMockContext();
+    const input = usdaGetFoods.input.parse({ fdcIds: [999_998, 999_999] });
+    const result = await usdaGetFoods.handler(input, ctx);
+
+    // structuredContent path
+    expect(result.foods).toHaveLength(0);
+    expect(result.failed).toEqual(failed);
+
+    // content[] path — an empty batch must say so rather than render nothing
+    const text = firstText(format(result));
+    expect(text).toContain('0 foods fetched');
+    expect(text).toContain('2 failed');
+    expect(text).toContain('999998');
+    expect(text).toContain('999999');
+  });
+
   it('returns nutrient profiles for all valid fdcIds', async () => {
     const ctx = createMockContext();
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079] });
