@@ -1,6 +1,6 @@
 {
   "name": "usda-mcp-server",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Search foods, compare nutrients, and look up the full USDA FoodData Central database via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "Casey Hand"

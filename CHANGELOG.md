@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-08-25
+
+Adopts mcp-ts-core's MCP SDK v2 migration (^0.12.3) — tool inputs are now strict (an unrecognized argument key is rejected by name, not dropped) and the outputSchema declares the error envelope; adds response cache hints; pins Bun to 1.4.0
+
 ## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-08-13
 
 Log expected FDC 404s from usda_get_food's lookup at debug instead of error, so a missing FDC ID no longer inflates error-rate logs
