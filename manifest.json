@@ -22,7 +22,7 @@
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
-        "USDA_FDC_API_KEY": "${USDA_FDC_API_KEY}"
+        "USDA_FDC_API_KEY": "${user_config.USDA_FDC_API_KEY}"
       }
     }
   },
@@ -37,7 +37,10 @@
     "USDA_FDC_API_KEY": {
       "title": "USDA FDC API Key",
       "description": "API key for the USDA FoodData Central API. Get one free at https://api.data.gov/signup/",
-      "type": "string"
+      "type": "string",
+      "required": false,
+      "sensitive": true,
+      "default": ""
     }
   }
 }

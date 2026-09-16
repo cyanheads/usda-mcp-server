@@ -1,21 +1,44 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "usda-mcp-server",
   "version": "0.1.9",
   "description": "Search foods, compare nutrients, and look up the full USDA FoodData Central database via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "Casey Hand"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/usda-mcp-server#readme",
   "repository": "https://github.com/cyanheads/usda-mcp-server",
   "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "usda",
+    "fdc",
+    "fooddata-central",
+    "nutrition",
+    "food",
+    "nutrients"
+  ],
   "mcpServers": {
     "usda-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/usda-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
-        "USDA_FDC_API_KEY": "your-api-key"
+        "USDA_FDC_API_KEY": "${user_config.USDA_FDC_API_KEY}"
       }
+    }
+  },
+  "userConfig": {
+    "USDA_FDC_API_KEY": {
+      "type": "string",
+      "title": "USDA FDC API Key",
+      "description": "API key for the USDA FoodData Central API. Get one free at https://api.data.gov/signup/",
+      "sensitive": true,
+      "default": ""
     }
   }
 }
