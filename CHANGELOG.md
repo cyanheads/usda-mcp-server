@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-09-16
+
+Adopts mcp-ts-core 0.13.2: stateless session posture in src/index.ts, argument rejections carry the InvalidParams envelope, and the server card publishes its resolved session mode. Fixes plugin manifests overwriting a user's API key with a placeholder; moves the skill tree to framework-skills/; raises the Bun floor to 1.4.0.
+
 ## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-08-25
 
 Adopts mcp-ts-core's MCP SDK v2 migration (^0.12.3) — tool inputs are now strict (an unrecognized argument key is rejected by name, not dropped) and the outputSchema declares the error envelope; adds response cache hints; pins Bun to 1.4.0
