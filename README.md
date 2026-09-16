@@ -27,97 +27,93 @@
 
 ---
 
-## Tools
+## Overview
 
-Five tools covering the USDA FoodData Central workflow — from discovery to detailed nutrient analysis:
+USDA FoodData Central — the US government's authoritative food composition database, spanning roughly 400,000 foods across SR Legacy, Foundation, Survey (FNDDS), and Branded sources. Search foods by keyword or UPC, pull full nutrient profiles with portion scaling, and compare foods side by side from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:---|:---|
-| `usda_search_foods` | Search foods by keyword across SR Legacy, Foundation, Survey FNDDS, and Branded data sources, with nutrient preview and pagination |
-| `usda_get_food` | Full nutrient profile for one food by FDC ID, with optional per-portion scaling (g, oz, lb, kg, or serving) |
-| `usda_get_foods` | Batch nutrient fetch for 2–20 FDC IDs in a single request; failed IDs reported in `failed[]` instead of aborting |
-| `usda_compare_foods` | Side-by-side nutrient comparison for 2–5 foods, formatted as a markdown table scaled to a common gram basis |
-| `usda_list_nutrients` | Static FDC nutrient reference table (~150 nutrients) with IDs, names, units, and categories — no API call required |
+| `usda_search_foods` | Search foods by keyword, ingredient, or UPC/GTIN across SR Legacy, Foundation, Survey (FNDDS), and Branded data sources |
+| `usda_get_food` | Full nutrient profile for one food by FDC ID, with optional per-portion scaling |
+| `usda_get_foods` | Batch nutrient fetch for 2–20 FDC IDs in a single request |
+| `usda_compare_foods` | Side-by-side nutrient comparison for 2–5 foods, formatted as a markdown table |
+| `usda_list_nutrients` | Static FDC nutrient reference table (~150 nutrients) with IDs, names, units, and categories |
 
-### `usda_search_foods`
+### Resources
 
-Search USDA FoodData Central foods by keyword, UPC/GTIN code, or ingredient.
-
-- Covers all FDC data sources: SR Legacy (common whole foods, complete nutrient profiles), Foundation, Survey FNDDS, and Branded (packaged products)
-- Defaults to SR Legacy; include `"Branded"` in `dataType` for packaged products or UPC lookup
-- Brand owner filter to narrow branded results (e.g. `"General Mills"`) — setting `brandOwner` without `dataType` searches Branded, since only Branded records carry a brand owner
-- Food category filter (e.g. `"Poultry Products"`, `"Vegetables and Vegetable Products"`)
-- Pagination via `pageSize` (up to 50) and `pageNumber`
-- Returns FDC IDs and a preview of key nutrients (energy, protein, fat, carbs) — use `usda_get_food` for the full profile
-
----
-
-### `usda_get_food`
-
-Full nutrient profile for one food by FDC ID.
-
-- All available nutrients (or a filtered subset via `nutrients[]`) with amounts per 100g
-- Optional portion scaling — provide `quantity` + `unit` to scale values (e.g. `quantity=200, unit="g"` → per-200g values)
-- `unit="serving"` scales to the food's first defined portion weight
-- Returns all named portion definitions (`allPortions[]`) alongside the serving info
-- Filtering `nutrients[]` to specific IDs strongly reduces context size for common queries (use `usda_list_nutrients` to look up IDs)
-
----
-
-### `usda_get_foods`
-
-Batch nutrient fetch for 2–20 FDC IDs.
-
-- All values per 100g (no portion scaling in batch mode)
-- `nutrients[]` filter strongly recommended — full profiles for 20 foods are large
-- Per-item partial failure: `failed[]` carries IDs that returned no data, so one missing food doesn't abort the batch
-- More efficient than N individual `usda_get_food` calls when you already have FDC IDs
-
----
-
-### `usda_compare_foods`
-
-Side-by-side nutrient comparison for 2–5 foods.
-
-- Returns a pivot table — one row per nutrient, one column per food — and formats it as a markdown table
-- Defaults to the 12 most commonly compared nutrients (energy, protein, fat, saturated fat, carbs, fiber, total sugars, sodium, potassium, calcium, iron, vitamin C)
-- Pass custom `nutrients[]` for specific comparisons (e.g. just iron and vitamin C)
-- All values scaled to a common gram basis (default 100g; override with `quantity` + `unit`)
-- Proceeds with valid foods when some IDs aren't found — only fails when fewer than 2 IDs return data
-- Rows where all values are null (nutrient not tracked for any of the selected foods) are filtered out
-
----
-
-### `usda_list_nutrients`
-
-FDC nutrient reference table — all ~150 tracked nutrients.
-
-- Returns IDs, names, SR reference numbers, units, and categories
-- Optional `category` filter: `macronutrients`, `vitamins`, `minerals`, `lipids`, `amino_acids`, `other`
-- Resolves nutrient names (e.g. `"vitamin C"`) to FDC IDs (1162) for use in `nutrients[]` params
-- Static data — no API call, instant response; call once and reuse the IDs
-
-## Resources and prompts
-
-| Type | Name | Description |
-|:---|:---|:---|
-| Resource | `usda://food/{fdcId}` | Full nutrient profile for a specific food by FDC ID — same data as `usda_get_food` without portion scaling |
-| Resource | `usda://nutrients` | Complete FDC nutrient reference list — all ~150 tracked nutrients with IDs, names, units, and categories |
+| Resource | Description |
+|:---|:---|
+| `usda://food/{fdcId}` | Full nutrient profile for a specific food by FDC ID |
+| `usda://nutrients` | Complete FDC nutrient reference list |
 
 All resource data is also reachable via tools. Use `usda_search_foods` to discover FDC IDs before reading food resources.
 
+## Capability reference
+
+### `usda_search_foods` <sub>tool</sub>
+
+- Query by keyword, ingredient name, or UPC/GTIN code; optional `dataType[]` filter across SR Legacy, Foundation, Survey (FNDDS), and Branded, defaulting to `["SR Legacy"]` (or `["Branded"]` once `brandOwner` is set)
+- `brandOwner` and `foodCategory` filters narrow results; `pageSize` (max 50, default 10) and `pageNumber` paginate
+- Returns FDC IDs plus a preview of key nutrients (energy, protein, fat, carbs) — not a complete profile
+- Typed errors: `query_empty` (blank query), `no_results` (nothing matched in the requested data sources)
+
+---
+
+### `usda_get_food` <sub>tool</sub>
+
+- Full nutrient profile for one `fdcId`; optional `nutrients[]` filter to specific IDs
+- Optional `quantity` + `unit` (`g` / `oz` / `lb` / `kg` / `serving`) scales every value from the FDC per-100g basis; `unit="serving"` uses the food's first defined portion weight
+- Returns `allPortions[]` alongside the scaled result
+- Typed errors: `not_found` (bad FDC ID), `quantity_without_unit`, `no_portion_data` (`serving` requested but the food has no portion data)
+
+---
+
+### `usda_get_foods` <sub>tool</sub>
+
+- Batch fetch for 2–20 FDC IDs in one call; values are per-100g only (no portion scaling)
+- `nutrients[]` filter strongly recommended — full profiles for 20 foods are large
+- Per-ID partial failure — IDs that return no data land in `failed[]` instead of aborting the batch
+
+---
+
+### `usda_compare_foods` <sub>tool</sub>
+
+- Side-by-side comparison for 2–5 FDC IDs, pivoted one row per nutrient and one column per food
+- Defaults to 12 commonly compared nutrients (energy, protein, fat, saturated fat, carbs, fiber, total sugars, sodium, potassium, calcium, iron, vitamin C) unless `nutrients[]` is given
+- All values scaled to a common `quantity` + `unit` basis (default 100g)
+- Proceeds with the valid foods when some IDs return no data; only throws `too_few_foods` when fewer than 2 resolve
+- Rows where every food is null for that nutrient are filtered out
+
+---
+
+### `usda_list_nutrients` <sub>tool</sub>
+
+- Static reference table of ~150 tracked FDC nutrients — no API call
+- Optional `category` filter: `macronutrients`, `vitamins`, `minerals`, `lipids`, `amino_acids`, `other`
+- Returns each nutrient's ID, name, SR reference number, unit, and category — resolve a name to the ID used by `nutrients[]` elsewhere
+
+---
+
+### `usda://food/{fdcId}` <sub>resource</sub>
+
+- Same data as `usda_get_food` without portion scaling — full nutrient profile per 100g as `application/json`
+- `fdcId` must be a bare positive integer (no sign, leading zero, decimal, or exponent); anything else throws `invalid_id`
+- `not_found` when the ID doesn't exist in FDC
+
+---
+
+### `usda://nutrients` <sub>resource</sub>
+
+- Complete FDC nutrient reference — same content as `usda_list_nutrients` with no category filter
+- Served as `application/json` with a 1-hour public cache hint, since the table is bundled at build time and identical for every caller
+
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
-- Declarative tool and resource definitions — single file per primitive, framework handles registration and validation
-- Unified error handling — handlers throw, framework catches, classifies, and formats
-- Pluggable auth: `none`, `jwt`, `oauth`
-- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
-- Structured logging with optional OpenTelemetry tracing
-- STDIO and Streamable HTTP transports
-
-USDA FDC-specific:
+FoodData Central-specific:
 
 - Type-safe client for the USDA FoodData Central REST API (`api.nal.usda.gov/fdc/v1`)
 - Normalization layer that handles inconsistent API response shapes across search, single-food, and batch endpoints
@@ -216,7 +212,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 USDA_FDC_API_KEY=your-api-key bun run
 
 ### Prerequisites
 
-- [Bun v1.3.2](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
 - A free USDA FDC API key — register at [api.data.gov/signup](https://api.data.gov/signup/). Required for food search, lookup, and comparison calls; `usda_list_nutrients` and the static nutrient reference work without it.
 
 ### Installation
@@ -316,7 +312,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck
