@@ -24,6 +24,12 @@ await createApp({
     'resources/list': { ttlMs: 3_600_000, cacheScope: 'public' },
     'resources/templates/list': { ttlMs: 3_600_000, cacheScope: 'public' },
   },
+  /**
+   * No handler opens a multi-round-trip input request, so nothing needs a
+   * session. Declared here as the durable form — an explicit
+   * `MCP_SESSION_MODE` in a deployment still wins over it.
+   */
+  sessionMode: 'stateless',
   tools: allToolDefinitions,
   resources: allResourceDefinitions,
   prompts: [],
