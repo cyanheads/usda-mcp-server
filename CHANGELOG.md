@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-09-21
+
+Adopts mcp-ts-core 0.13.3-0.13.6: argument-rejection recovery hints, tool-error reason/retryable text, case-style key aliasing, and notice-severity lookup misses; adds a CodeQL workflow and corrects the .env.example HTTP host default.
+
 ## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-09-16
 
 Adopts mcp-ts-core 0.13.2: stateless session posture in src/index.ts, argument rejections carry the InvalidParams envelope, and the server card publishes its resolved session mode. Fixes plugin manifests overwriting a user's API key with a placeholder; moves the skill tree to framework-skills/; raises the Bun floor to 1.4.0.
