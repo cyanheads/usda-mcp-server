@@ -128,6 +128,7 @@ export const usdaGetFood = tool('usda_get_food', {
       code: JsonRpcErrorCode.NotFound,
       when: 'The FDC ID does not exist in the database.',
       recovery: 'Verify the FDC ID using usda_search_foods and try again with a valid ID.',
+      severity: 'notice',
     },
     {
       reason: 'quantity_without_unit',
@@ -140,6 +141,7 @@ export const usdaGetFood = tool('usda_get_food', {
       code: JsonRpcErrorCode.NotFound,
       when: 'unit="serving" was requested but the food has no portion data.',
       recovery: 'Use a gram-based unit (g, oz, lb, kg) instead of serving for this food.',
+      severity: 'notice',
     },
   ],
 

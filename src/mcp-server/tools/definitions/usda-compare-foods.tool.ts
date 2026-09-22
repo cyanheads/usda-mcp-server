@@ -137,6 +137,7 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Fewer than 2 of the provided FDC IDs returned data, making comparison impossible.',
       recovery: 'Verify IDs using usda_search_foods and provide at least 2 valid FDC IDs.',
+      severity: 'notice',
     },
   ],
 

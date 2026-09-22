@@ -139,6 +139,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       when: 'No foods matched the query in the specified data sources.',
       recovery:
         'Broaden the query, check spelling, or try a different dataType (e.g. add "Branded").',
+      severity: 'notice',
     },
   ],
 
