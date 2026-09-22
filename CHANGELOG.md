@@ -4,7 +4,7 @@ All notable changes to this project. Each entry links to its full per-version fi
 
 ## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-09-21
 
-Adopts mcp-ts-core 0.13.3-0.13.6: argument-rejection recovery hints, tool-error reason/retryable text, case-style key aliasing, and notice-severity lookup misses; adds a CodeQL workflow and corrects the .env.example HTTP host default.
+Adopts mcp-ts-core 0.13.3-0.13.6: argument-rejection recovery hints, tool-error reason/retryable text, case-style key aliasing, and notice-severity lookup misses; adds a CodeQL workflow and corrects the HTTP host default stated in .env.example's comment.
 
 ## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-09-16
 
