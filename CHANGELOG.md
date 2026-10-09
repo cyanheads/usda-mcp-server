@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-10-09
+
+Adopts mcp-ts-core 0.13.7–0.13.14: error envelopes carry a request ID, numeric strings sent for number arguments are repaired, network-failure messages name FoodData Central by origin only, and the server.json HTTP entry now starts the HTTP transport; Docker images install dependencies on the build platform.
+
 ## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-09-21
 
 Adopts mcp-ts-core 0.13.3-0.13.6: argument-rejection recovery hints, tool-error reason/retryable text, case-style key aliasing, and notice-severity lookup misses; adds a CodeQL workflow and corrects the HTTP host default stated in .env.example's comment.
