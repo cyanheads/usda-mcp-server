@@ -162,10 +162,7 @@ export const usdaGetFood = tool('usda_get_food', {
           err instanceof Error &&
           (err.message.includes('404') || err.message.toLowerCase().includes('not found'))
         ) {
-          throw ctx.fail('not_found', `FDC ID ${input.fdcId} not found.`, {
-            fdcId: input.fdcId,
-            ...ctx.recoveryFor('not_found'),
-          });
+          throw ctx.fail('not_found', `FDC ID ${input.fdcId} not found.`, { fdcId: input.fdcId });
         }
         throw err;
       });
@@ -182,7 +179,7 @@ export const usdaGetFood = tool('usda_get_food', {
           throw ctx.fail(
             'no_portion_data',
             `Food "${food.description}" (ID ${food.fdcId}) has no portion data.`,
-            { fdcId: food.fdcId, ...ctx.recoveryFor('no_portion_data') },
+            { fdcId: food.fdcId },
           );
         }
         gramWeight = food.portions[0]?.gramWeight ?? 0;

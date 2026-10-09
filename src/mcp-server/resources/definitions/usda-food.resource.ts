@@ -46,7 +46,6 @@ export const usdaFoodResource = resource('usda://food/{fdcId}', {
     if (!FDC_ID_PATTERN.test(params.fdcId)) {
       throw ctx.fail('invalid_id', `"${params.fdcId}" is not a valid FDC ID.`, {
         fdcId: params.fdcId,
-        ...ctx.recoveryFor('invalid_id'),
       });
     }
     const fdcId = Number(params.fdcId);
@@ -60,10 +59,7 @@ export const usdaFoodResource = resource('usda://food/{fdcId}', {
           err instanceof Error &&
           (err.message.includes('404') || err.message.toLowerCase().includes('not found'))
         ) {
-          throw ctx.fail('not_found', `FDC ID ${fdcId} not found.`, {
-            fdcId,
-            ...ctx.recoveryFor('not_found'),
-          });
+          throw ctx.fail('not_found', `FDC ID ${fdcId} not found.`, { fdcId });
         }
         throw err;
       });

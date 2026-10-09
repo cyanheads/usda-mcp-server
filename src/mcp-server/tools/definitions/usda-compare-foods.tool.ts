@@ -158,7 +158,7 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       throw ctx.fail(
         'too_few_foods',
         `Only ${rawFoods.length} of ${input.fdcIds.length} FDC IDs returned data.`,
-        { fdcIds: input.fdcIds, ...ctx.recoveryFor('too_few_foods') },
+        { fdcIds: input.fdcIds },
       );
     }
 
