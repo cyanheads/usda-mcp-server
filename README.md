@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.12-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/usda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/usda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/usda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.12-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/usda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/usda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/usda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Overview
 
-USDA FoodData Central — the US government's authoritative food composition database, spanning roughly 400,000 foods across SR Legacy, Foundation, Survey (FNDDS), and Branded sources. Search foods by keyword or UPC, pull full nutrient profiles with portion scaling, and compare foods side by side from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Nutrition data for roughly 400,000 foods from USDA FoodData Central, the US government's authoritative food composition database. Search by keyword or UPC, pull full nutrient profiles scaled to any portion, and compare foods side by side.
 
 ### Tools
 
@@ -57,14 +57,14 @@ All resource data is also reachable via tools. Use `usda_search_foods` to discov
 - Query by keyword, ingredient name, or UPC/GTIN code; optional `dataType[]` filter across SR Legacy, Foundation, Survey (FNDDS), and Branded, defaulting to `["SR Legacy"]` (or `["Branded"]` once `brandOwner` is set)
 - `brandOwner` and `foodCategory` filters narrow results; `pageSize` (max 50, default 10) and `pageNumber` paginate
 - Returns FDC IDs plus a preview of key nutrients (energy, protein, fat, carbs) — not a complete profile
-- Typed errors: `query_empty` (blank query), `no_results` (nothing matched in the requested data sources)
+- Typed errors: `query_empty` (blank query), `query_syntax` (FDC rejected the query syntax), `no_results` (nothing matched in the requested data sources)
 
 ---
 
 ### `usda_get_food` <sub>tool</sub>
 
 - Full nutrient profile for one `fdcId`; optional `nutrients[]` filter to specific IDs
-- Optional `quantity` + `unit` (`g` / `oz` / `lb` / `kg` / `serving`) scales every value from the FDC per-100g basis; `unit="serving"` uses the food's first defined portion weight
+- Optional `unit` (`g` / `oz` / `lb` / `kg` / `serving`) with an optional `quantity` scales every value from the FDC per-100g basis; `quantity` defaults to 100 for mass units and 1 for `serving`, and `unit="serving"` multiplies the food's first defined portion weight by `quantity`
 - Returns `allPortions[]` alongside the scaled result
 - Typed errors: `not_found` (bad FDC ID), `quantity_without_unit`, `no_portion_data` (`serving` requested but the food has no portion data)
 
@@ -82,7 +82,7 @@ All resource data is also reachable via tools. Use `usda_search_foods` to discov
 
 - Side-by-side comparison for 2–5 FDC IDs, pivoted one row per nutrient and one column per food
 - Defaults to 12 commonly compared nutrients (energy, protein, fat, saturated fat, carbs, fiber, total sugars, sodium, potassium, calcium, iron, vitamin C) unless `nutrients[]` is given
-- All values scaled to a common `quantity` + `unit` basis (default 100g)
+- All values scaled to a common `quantity` + `unit` basis (default 100 g; `quantity` is an amount in `unit`, so `unit: "oz"` alone compares per 100 oz)
 - Proceeds with the valid foods when some IDs return no data; only throws `too_few_foods` when fewer than 2 resolve
 - Rows where every food is null for that nutrient are filtered out
 
@@ -131,18 +131,40 @@ Agent-friendly output:
 
 ### Public Hosted Instance
 
-A public instance is available at `https://usda.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+A public instance is available at `https://usda.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http usda-mcp-server https://usda.caseyjhand.com/mcp
+```
+
+For Cline (`cline_mcp_settings.json`):
 
 ```json
 {
   "mcpServers": {
     "usda-mcp-server": {
-      "type": "streamable-http",
+      "type": "streamableHttp",
       "url": "https://usda.caseyjhand.com/mcp"
     }
   }
 }
 ```
+
+For Cursor (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "usda-mcp-server": {
+      "url": "https://usda.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+Claude Desktop adds remote servers under Settings → Connectors.
 
 ### Self-Hosted / Local
 
@@ -299,7 +321,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — search, get, batch, compare, list-nutrients. |
 | `src/mcp-server/resources` | Resource definitions (`*.resource.ts`) — food profile and nutrient reference. |
 | `src/services/fdc` | `FdcService` — USDA FDC API client, normalization, and static nutrient reference data. |
-| `tests/` | Unit tests mirroring `src/` — 50 tests across all tools and resources. |
+| `tests/` | Unit tests mirroring `src/` — every tool, resource, and the FDC service. |
 
 ## Development guide
 

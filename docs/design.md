@@ -6,10 +6,10 @@
 
 | Name | Description | Key Inputs | Annotations | Errors |
 |:-----|:------------|:-----------|:------------|:-------|
-| `usda_search_foods` | Search foods by name across FDC data sources | `query`, `dataType[]`, `foodCategory`, `pageSize`, `pageNumber` | `readOnlyHint: true`, `openWorldHint: true` | `no_results` (NotFound, not retryable) |
-| `usda_get_food` | Full nutrient profile for a food by FDC ID, with per-portion scaling | `fdcId`, `nutrients[]`, `quantity`, `unit` | `readOnlyHint: true`, `openWorldHint: false` | `not_found` (NotFound, not retryable), `invalid_unit` (InvalidParams, not retryable), `no_portion_data` (InvalidParams, not retryable) |
+| `usda_search_foods` | Search foods by name across FDC data sources | `query`, `dataType[]`, `foodCategory`, `pageSize`, `pageNumber` | `readOnlyHint: true`, `openWorldHint: true` | `query_empty` (ValidationError, not retryable), `query_syntax` (ValidationError, not retryable), `no_results` (NotFound, not retryable) |
+| `usda_get_food` | Full nutrient profile for a food by FDC ID, with per-portion scaling | `fdcId`, `nutrients[]`, `quantity`, `unit` | `readOnlyHint: true`, `openWorldHint: false` | `not_found` (NotFound, not retryable), `quantity_without_unit` (ValidationError, not retryable), `no_portion_data` (NotFound, not retryable) |
 | `usda_get_foods` | Fetch nutrient profiles for multiple foods at once; returns per-food nutrient data | `fdcIds[]`, `nutrients[]` | `readOnlyHint: true`, `openWorldHint: false` | per-item failures reported in `failed[]` (not thrown) |
-| `usda_compare_foods` | Side-by-side nutrient comparison for 2–5 foods — formats a markdown table showing values for each requested nutrient | `fdcIds[]`, `nutrients[]`, `quantity`, `unit` | `readOnlyHint: true`, `openWorldHint: false` | `too_few_foods` (InvalidParams, not retryable — thrown only when fewer than 2 IDs return data) |
+| `usda_compare_foods` | Side-by-side nutrient comparison for 2–5 foods — formats a markdown table showing values for each requested nutrient | `fdcIds[]`, `nutrients[]`, `quantity`, `unit` | `readOnlyHint: true`, `openWorldHint: false` | `too_few_foods` (ValidationError, not retryable — thrown only when fewer than 2 IDs return data) |
 | `usda_list_nutrients` | List all tracked nutrients with their FDC IDs, names, and units — the nutrient dictionary | `category` (optional) | `readOnlyHint: true`, `openWorldHint: false` | none (static data) |
 
 ### Resources
@@ -35,7 +35,7 @@ Target workflows: answering nutrition questions ("how much protein in chicken br
 
 - Auth: USDA data.gov API key (required, free signup). Env var: `USDA_FDC_API_KEY`.
 - Rate limit: 1,000 requests/hour per IP (note: docs say 3,600 but live API header says 1,000 for DEMO_KEY; with a real key the limit is likely higher — treat conservatively).
-- All nutrient values are per 100g in the FDC database. Portion scaling is done server-side when `quantity`+`unit` are provided.
+- All nutrient values are per 100g in the FDC database. Portion scaling is done server-side when `unit` is provided; `quantity` defaults to 100 for `g`/`oz`/`lb`/`kg` and 1 for `serving`.
 - The API has no nutrient-ranked search endpoint ("foods highest in X") — this requires fetching a search result set and sorting client-side, which is too expensive. Not included.
 - SR Legacy is the correct default for common whole foods. Branded is opt-in.
 - UPC/GTIN lookup: branded search accepts `query` as a UPC code — no separate endpoint.
@@ -59,7 +59,7 @@ Target workflows: answering nutrition questions ("how much protein in chicken br
 
 | Noun | FDC Operations | API Endpoints |
 |:-----|:---------------|:--------------|
-| Food | search, get-by-id, get-multiple | `GET /foods/search`, `GET /food/{fdcId}`, `POST /foods` |
+| Food | search, get-by-id, get-multiple | `POST /foods/search`, `GET /food/{fdcId}`, `POST /foods` |
 | Nutrients | list reference data (static) | built-in from known FDC nutrient IDs |
 
 The FDC API has 4 endpoints: `/food/{fdcId}` (single), `/foods` (batch), `/foods/list` (browse paginated), `/foods/search` (keyword search). The browse list (`/foods/list`) returns foods without nutrient values and has no keyword search — it's only useful for exhaustive iteration. Not used.
@@ -75,7 +75,7 @@ Search foods by keyword. The agent's entry point for resolving a food name to FD
 **Why:** FDC uses verbose USDA descriptions ("Chicken, broilers or fryers, breast, skinless, boneless, meat only, raw") that don't match casual input. Keyword search handles the gap. Returns basic info + a preview of key nutrients (protein, fat, carbs, energy) from the search result, so the agent can often answer simple "how much protein?" questions without a follow-up `usda_get_food` call.
 
 **Input schema:**
-- `query: string` — search terms (required). Can be a food name, UPC/GTIN code (for branded), or ingredient.
+- `query: string` — search terms (required). Can be a food name, UPC/GTIN code (for branded), or ingredient. FDC parses it as Lucene query syntax; before sending, the service backslash-escapes each `/`, `[`, `]`, `{`, `}` outside a well-formed regex or range term, every `"` when the unescaped count is odd, and each `(` or `)` without a partner, so pasted descriptions such as `trimmed to 1/8" fat` and `w/o salt` search literally. A regex term is `/…/` starting a term (after the start, whitespace, `(`, `+`, `-`, `!`, or `field:`), ending one (before the end, whitespace, `)`, `^`, or `~`), with no unescaped whitespace or `/` inside; a range term is `[low TO high]` (either side `{`/`}`, either bound `*`) in the same positions with whitespace-free bounds. Both pass through, as do phrases (their contents untouched), `+`/`-`, `AND`/`OR`/`NOT`, `*`/`?`, `~`, `^`, balanced parentheses, and `field:value`.
 - `dataType: enum[]` optional, default `["SR Legacy"]` (or `["Branded"]` when `brandOwner` is set) — which FDC data sources to search. Options: `"SR Legacy"`, `"Foundation"`, `"Survey (FNDDS)"`, `"Branded"`. Multiple allowed. Defaults to SR Legacy because it's the most complete and least noisy for common foods.
 - `brandOwner: string` optional — filter branded results by brand owner name (e.g., "General Mills"). Only Branded records carry one, so supplying it selects Branded unless `dataType` is given explicitly.
 - `foodCategory: string` optional — filter by food category (e.g., "Poultry Products", "Vegetables and Vegetable Products").
@@ -93,8 +93,8 @@ Search foods by keyword. The agent's entry point for resolving a food name to FD
   - `foodCategory: string` optional
   - `brandOwner: string` optional (Branded only)
   - `brandName: string` optional (Branded only)
-  - `servingSize: number` optional (Branded only, grams)
-  - `servingSizeUnit: string` optional
+  - `servingSize: number` optional (Branded only, in `servingSizeUnit`)
+  - `servingSizeUnit: string` optional — as FDC reports it: mass (`g`, `GRM`), volume (`ml`, `MLT`), or other (`IU`, `MG`)
   - `householdServingFullText: string` optional
   - `nutrients: array` — up to 5 nutrients returned by the FDC search response. The set is not guaranteed or configurable at this endpoint: SR Legacy typically returns energy (1008), protein (1003), total fat (1004), carbohydrate (1005), and fiber (1079); Branded items may return fewer. Each: `{ id: number, name: string, amount: number, unit: string }`. For a complete, filterable nutrient profile, use `usda_get_food`.
   - `publishedDate: string`
@@ -103,9 +103,11 @@ Search foods by keyword. The agent's entry point for resolving a food name to FD
 
 | reason | code | when | retryable? |
 |:-------|:-----|:-----|:-----------|
+| `query_empty` | ValidationError | The query is empty or whitespace-only | No — provide a food name, ingredient, or UPC/GTIN code |
+| `query_syntax` | ValidationError | FDC rejected the query syntax (HTTP 400), e.g. a dangling operator or trailing backslash | No — remove a leading/trailing operator or trailing backslash, or backslash-escape a literal character |
 | `no_results` | NotFound | No foods matched the query | No — broaden query, check spelling, try a different `dataType` |
 
-Upstream 429/5xx bubble as `ServiceUnavailable` (retryable).
+Upstream 429 bubbles as `RateLimited` and 5xx as `ServiceUnavailable` (both retryable). Each call retries within one 45 s budget (15 s per attempt, up to 3 retries); a stalled upstream fails at the budget as `Timeout` with `reason: retry_deadline_exceeded`, or as that 429's `RateLimited` error when the last attempt to complete before the cut-off was a 429.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
@@ -120,8 +122,8 @@ Full nutrient profile for one food. Returns all available nutrients (or a filter
 **Input schema:**
 - `fdcId: number` — FDC ID of the food (from `usda_search_foods` results).
 - `nutrients: number[]` optional — filter to specific nutrient IDs (e.g., `[1003, 1004, 1005, 1008]` for macros only). Without this, all available nutrients are returned. Use to reduce context size when only specific nutrients are needed.
-- `quantity: number` optional — amount of food to scale nutrients to. When provided, `unit` is required.
-- `unit: enum` optional — unit for `quantity`: `"g"` | `"oz"` | `"lb"` | `"kg"` | `"serving"`. `"serving"` uses the food's first available portion weight. Required when `quantity` is provided.
+- `quantity: number` optional — amount of food, in `unit`, to scale nutrients to. Requires `unit`. Defaults to 100 when `unit` is `g`/`oz`/`lb`/`kg`, and to 1 when `unit` is `"serving"`.
+- `unit: enum` optional — unit for `quantity`: `"g"` | `"oz"` | `"lb"` | `"kg"` | `"serving"`. `"serving"` is the food's first available portion weight multiplied by `quantity`. Required when `quantity` is provided; given alone, scales to 100 of a mass unit or 1 serving.
 
 **Output schema:**
 - `fdcId: number`
@@ -134,12 +136,12 @@ Full nutrient profile for one food. Returns all available nutrients (or a filter
 - `ingredients: string` optional (Branded only)
 - `servingInfo: object` optional — `{ description, gramWeight }` — the first available portion, if present.
 - `allPortions: array` optional — `[{ description, gramWeight }]` — all named portions.
-- `scaledTo: object` optional — present when `quantity`+`unit` were provided: `{ quantity, unit, gramWeight }` — what the nutrients were scaled to.
+- `scaledTo: object` optional — present when `unit` was provided: `{ quantity, unit, gramWeight }` — what the nutrients were scaled to; `quantity` is the requested value or its default, `gramWeight` is rounded to 4 decimals.
 - `nutrients: array` — each item:
   - `id: number` — FDC nutrient ID (use this for filtering in other tools)
   - `name: string` — human-readable name ("Protein", "Energy", "Iron, Fe")
   - `number: string` — SR reference number (legacy, secondary)
-  - `amount: number` — value per 100g, or scaled to `quantity`+`unit` if provided
+  - `amount: number` — value per 100g, or per `scaledTo.gramWeight` when `unit` is provided
   - `unit: string` — "G", "MG", "UG", "KCAL", etc.
   - `percentDailyValue: number` optional (Branded only)
 
@@ -148,10 +150,10 @@ Full nutrient profile for one food. Returns all available nutrients (or a filter
 | reason | code | when | retryable? |
 |:-------|:-----|:-----|:-----------|
 | `not_found` | NotFound | FDC ID doesn't exist | No — verify ID from a search result |
-| `invalid_unit` | InvalidParams | Unrecognized `unit` string | No — use `g`, `oz`, `lb`, `kg`, or `serving` |
-| `no_portion_data` | InvalidParams | `unit: "serving"` requested but food has no portion data | No — use a gram-based unit instead |
+| `quantity_without_unit` | ValidationError | `quantity` provided without `unit` | No — provide `unit` (`g`, `oz`, `lb`, `kg`, or `serving`) alongside `quantity` |
+| `no_portion_data` | NotFound | `unit: "serving"` requested but food has no portion data | No — use a gram-based unit instead |
 
-Upstream 429/5xx bubble as `ServiceUnavailable` (retryable).
+Upstream 429 bubbles as `RateLimited` and 5xx as `ServiceUnavailable` (both retryable). Each call retries within one 45 s budget (15 s per attempt, up to 3 retries); a stalled upstream fails at the budget as `Timeout` with `reason: retry_deadline_exceeded`, or as that 429's `RateLimited` error when the last attempt to complete before the cut-off was a 429.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: false`
 
@@ -188,7 +190,7 @@ Side-by-side nutrient comparison for 2–5 foods. Takes FDC IDs and returns a st
 **Input schema:**
 - `fdcIds: number[]` — 2 to 5 FDC IDs to compare.
 - `nutrients: number[]` optional — which nutrients to include in the comparison. Defaults to the 12 most commonly compared: energy (1008), protein (1003), total fat (1004), saturated fat (1258), carbohydrate (1005), fiber (1079), total sugars (2000), sodium (1093), potassium (1092), calcium (1087), iron (1089), vitamin C (1162). Provide this to get different nutrients.
-- `quantity: number` optional, default 100 — gram basis for comparison. All values scaled to this many grams.
+- `quantity: number` optional, default 100 — amount of food, in `unit`, that every value is scaled to (`unit: "oz"` alone compares per 100 oz).
 - `unit: enum` optional, default `"g"` — unit for `quantity`: `"g"` | `"oz"` | `"lb"` | `"kg"`.
 
 **Output schema:**
@@ -203,15 +205,15 @@ Side-by-side nutrient comparison for 2–5 foods. Takes FDC IDs and returns a st
 
 **Partial success:** If one or more FDC IDs are not found, the comparison proceeds with the IDs that returned data. A `not_found` entry is added to `missingData` for each missing ID (with `nutrientId: null`). The tool only throws `too_few_foods` when fewer than 2 IDs return data — i.e., 0 or 1 valid food. This means an agent passing 3 IDs where 1 is bad gets a valid 2-food comparison, not an error.
 
-**format():** Renders a markdown table with food descriptions as column headers and nutrient names (with units) as row labels. Each cell shows the scaled value, or `—` when data is absent. Leads with a `**Basis:**` line (e.g., `100 g`) and appends a `**Missing data:**` note listing any `missingData` entries.
+**format():** Renders a markdown table with food descriptions as column headers and nutrient names (with units) as row labels. Each cell shows the scaled value, or `—` when data is absent. Leads with a `**Basis:**` line carrying quantity, unit, and the exact gram weight (e.g., `100 oz (2834.95g)`) and appends a `**Missing data:**` note listing any `missingData` entries.
 
 **Errors:**
 
 | reason | code | when | retryable? |
 |:-------|:-----|:-----|:-----------|
-| `too_few_foods` | InvalidParams | Fewer than 2 of the provided FDC IDs returned data | No — verify IDs from search results; tool proceeds with valid IDs, only throws when fewer than 2 succeed |
+| `too_few_foods` | ValidationError | Fewer than 2 of the provided FDC IDs returned data | No — verify IDs from search results; tool proceeds with valid IDs, only throws when fewer than 2 succeed |
 
-Upstream 429/5xx bubble as `ServiceUnavailable` (retryable).
+Upstream 429 bubbles as `RateLimited` and 5xx as `ServiceUnavailable` (both retryable). Each call retries within one 45 s budget (15 s per attempt, up to 3 retries); a stalled upstream fails at the budget as `Timeout` with `reason: retry_deadline_exceeded`, or as that 429's `RateLimited` error when the last attempt to complete before the cut-off was a 429.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: false`
 
@@ -378,7 +380,7 @@ Agents that need branded can opt in explicitly. The tool description makes this 
 
 **Base URL:** `https://api.nal.usda.gov/fdc/v1`
 
-**Auth:** `?api_key=<key>` query parameter on all requests.
+**Auth:** `X-Api-Key` request header on all requests (never the `api_key` query parameter, so the key stays out of URLs and error messages).
 
 **Key endpoints:**
 
@@ -417,7 +419,7 @@ HTTP 429 for rate limits.
 ## Implementation Order
 
 1. Config (`USDA_FDC_API_KEY`) and server setup
-2. `FdcService` — search, single-food GET, batch GET, retry + rate-limit handling
+2. `FdcService` — search, single-food GET, batch GET, retry ladder bounded by a 45 s total deadline (`withRetry` `deadlineMs`), rate-limit handling, search-query escaping
 3. Static nutrient reference data (embedded lookup table for `usda_list_nutrients`)
 4. `usda_list_nutrients` (no API call — static data)
 5. `usda_search_foods`
