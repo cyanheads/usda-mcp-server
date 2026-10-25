@@ -19,7 +19,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       .string()
       .min(1)
       .describe(
-        'Search terms — food name, ingredient, or UPC/GTIN code for branded products. Examples: "chicken breast raw", "banana", "012345678901". FDC reads Lucene syntax: "quoted phrases", +required and -excluded terms, AND/OR/NOT, wildcards (chick*), fuzzy matches (beeef~), boosts (beef^5), grouping parentheses, field:value, regex terms (/chick.*/), and ranges ([a TO c], {a TO c}). Any other slash, bracket, or brace (1/8, w/o, beef [raw]) and unpaired quotes or parentheses are sent as literal characters.',
+        'Search terms — food name, ingredient, or UPC/GTIN code for branded products. Examples: "chicken breast raw", "banana", "012345678901". FDC reads Lucene syntax: "quoted phrases", +required and -excluded terms, AND/OR/NOT, wildcards (chick*), fuzzy matches (beeef~), boosts (beef^5), grouping parentheses, field:value, regex terms (/chick.*/), and ranges ([a TO c], {a TO c}). Any other slash, bracket, or brace (1/8, w/o, beef [raw]), any unpaired parenthesis, and every double quote when the query holds an odd number of them are sent as literal characters.',
       ),
     dataType: z
       .array(z.enum(['SR Legacy', 'Foundation', 'Survey (FNDDS)', 'Branded']))
