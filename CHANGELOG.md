@@ -4,7 +4,7 @@ All notable changes to this project. Each entry links to its full per-version fi
 
 ## [0.1.13](changelog/0.1.x/0.1.13.md) — 2026-10-25
 
-usda_search_foods escapes characters FDC rejects (/, brackets, unpaired quotes and parentheses) and reports remaining syntax errors as query_syntax; FDC calls share a 45 s retry deadline; usda_get_food applies a default quantity when only unit is sent; mcp-ts-core ^0.13.16.
+usda_search_foods escapes what FDC rejects (a slash, bracket, or brace outside a regex or range term, all quotes when their count is odd, unpaired parentheses) and reports remaining syntax errors as query_syntax; FDC calls share a 45 s retry deadline; usda_get_food applies a default quantity when only unit is sent; mcp-ts-core ^0.13.16.
 
 ## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-10-09
 
