@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.13](changelog/0.1.x/0.1.13.md) — 2026-10-25
+
+usda_search_foods escapes characters FDC rejects (/, brackets, unpaired quotes and parentheses) and reports remaining syntax errors as query_syntax; FDC calls share a 45 s retry deadline; usda_get_food applies a default quantity when only unit is sent; mcp-ts-core ^0.13.16.
+
 ## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-10-09
 
 Adopts mcp-ts-core 0.13.7–0.13.14: error envelopes carry a request ID, numeric strings sent for number arguments are repaired, network-failure messages name FoodData Central by origin only, and the server.json HTTP entry now starts the HTTP transport; Docker images install dependencies on the build platform.
