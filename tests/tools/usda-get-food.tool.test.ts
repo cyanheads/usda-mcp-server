@@ -3,10 +3,37 @@
  * @module tests/tools/usda-get-food.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import {
+  createMockContext,
+  type FetchMockHarness,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaGetFood } from '@/mcp-server/tools/definitions/usda-get-food.tool.js';
+import { createFdcFake } from '../fdc-fake.js';
 import { firstText } from '../helpers.js';
+
+/**
+ * The McpError `fetchWithTimeout` throws for a non-2xx FDC response: the
+ * status-mapped code, plus `status` and its legacy `statusCode` alias.
+ */
+function fdcHttpError(status: number, message: string): McpError {
+  return new McpError(
+    status === 404 ? JsonRpcErrorCode.NotFound : JsonRpcErrorCode.ServiceUnavailable,
+    message,
+    {
+      status,
+      statusText: status === 404 ? 'Not Found' : 'Service Unavailable',
+      body: '{"error":{"code":"NOT_FOUND"}}',
+      statusCode: status,
+      responseBody: '{"error":{"code":"NOT_FOUND"}}',
+      errorSource: 'FetchHttpError',
+    },
+  );
+}
+
+let http: FetchMockHarness;
 
 const { format } = usdaGetFood;
 if (!format) throw new Error('usda_get_food must declare format()');
@@ -125,6 +152,83 @@ describe('usdaGetFood', () => {
     expect(result.scaledTo?.gramWeight).toBe(118);
   });
 
+  /**
+   * `unit` alone takes a default quantity (1 serving, 100 of a mass unit), and
+   * `quantity` multiplies a serving. The basis applied is always the one
+   * `scaledTo` names, so no call returns values for an amount it does not show.
+   */
+  describe('quantity defaults and serving multiples', () => {
+    const protein = (result: { nutrients: Array<{ id: number; amount: number }> }) =>
+      result.nutrients.find((n) => n.id === 1003)?.amount;
+
+    it('multiplies the first portion weight by quantity for unit="serving"', async () => {
+      const ctx = createMockContext({ errors: usdaGetFood.errors });
+      const input = usdaGetFood.input.parse({ fdcId: 171077, quantity: 2, unit: 'serving' });
+      const result = await usdaGetFood.handler(input, ctx);
+
+      // 2 × 118 g breast = 236 g → scaleFactor 2.36
+      expect(result.scaledTo).toEqual({ quantity: 2, unit: 'serving', gramWeight: 236 });
+      expect(protein(result)).toBe(53.1);
+    });
+
+    it('takes a fractional serving', async () => {
+      const ctx = createMockContext({ errors: usdaGetFood.errors });
+      const input = usdaGetFood.input.parse({ fdcId: 171077, quantity: 0.5, unit: 'serving' });
+      const result = await usdaGetFood.handler(input, ctx);
+
+      expect(result.scaledTo).toEqual({ quantity: 0.5, unit: 'serving', gramWeight: 59 });
+      expect(protein(result)).toBe(13.275);
+    });
+
+    it('defaults unit="serving" alone to one serving', async () => {
+      const ctx = createMockContext({ errors: usdaGetFood.errors });
+      const input = usdaGetFood.input.parse({ fdcId: 171077, unit: 'serving' });
+      const result = await usdaGetFood.handler(input, ctx);
+
+      expect(result.scaledTo).toEqual({ quantity: 1, unit: 'serving', gramWeight: 118 });
+      expect(protein(result)).toBe(26.55);
+    });
+
+    it.each([
+      ['g', 100, 22.5],
+      ['oz', 2834.95, 637.8637],
+      ['lb', 45359.2, 10205.82],
+      ['kg', 100000, 22500],
+    ] as const)(
+      'defaults unit="%s" alone to quantity 100 (%s g)',
+      async (unit, gramWeight, amount) => {
+        const ctx = createMockContext({ errors: usdaGetFood.errors });
+        const input = usdaGetFood.input.parse({ fdcId: 171077, unit });
+        const result = await usdaGetFood.handler(input, ctx);
+
+        expect(result.scaledTo).toEqual({ quantity: 100, unit, gramWeight });
+        expect(protein(result)).toBe(amount);
+      },
+    );
+
+    it('rounds a mass conversion to the same 4 decimals as nutrient amounts', async () => {
+      const ctx = createMockContext({ errors: usdaGetFood.errors });
+      // 3 × 28.3495 is 85.04849999999999 in binary floating point
+      const input = usdaGetFood.input.parse({ fdcId: 171077, quantity: 3, unit: 'oz' });
+      const result = await usdaGetFood.handler(input, ctx);
+
+      expect(result.scaledTo).toEqual({ quantity: 3, unit: 'oz', gramWeight: 85.0485 });
+    });
+
+    it('renders the basis line with the exact gram weight scaledTo carries', async () => {
+      const ctx = createMockContext({ errors: usdaGetFood.errors });
+      const result = await usdaGetFood.handler(
+        usdaGetFood.input.parse({ fdcId: 171077, quantity: 3, unit: 'oz' }),
+        ctx,
+      );
+      const lines = firstText(format(result)).split('\n');
+
+      expect(lines.filter((line) => line.startsWith('**Basis:**'))).toEqual([
+        '**Basis:** 3 oz (85.0485g)',
+      ]);
+    });
+  });
+
   it('throws ctx.fail("no_portion_data") when serving requested but no portions', async () => {
     const service = await getServiceMock();
     service.getFoodDetail.mockResolvedValue({ ...MOCK_FOOD_DETAIL, portions: [] });
@@ -136,14 +240,121 @@ describe('usdaGetFood', () => {
     });
   });
 
-  it('throws ctx.fail("not_found") when service returns 404-like error', async () => {
+  it('throws ctx.fail("not_found") when the service throws its HTTP 404 McpError', async () => {
     const service = await getServiceMock();
-    service.getFoodDetail.mockRejectedValue(new Error('404 Not Found'));
+    const upstream = fdcHttpError(
+      404,
+      'Fetch failed for https://api.example/food/999999. Status: 404',
+    );
+    service.getFoodDetail.mockRejectedValue(upstream);
     const ctx = createMockContext({ errors: usdaGetFood.errors });
     const input = usdaGetFood.input.parse({ fdcId: 999999 });
 
-    await expect(usdaGetFood.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'not_found' },
+    const err = await Promise.resolve(usdaGetFood.handler(input, ctx)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(McpError);
+    expect(err).toMatchObject({
+      code: JsonRpcErrorCode.NotFound,
+      message: 'FDC ID 999999 not found.',
+      data: { reason: 'not_found', fdcId: 999999 },
+    });
+    // The upstream error rides as cause for the server log, never in data
+    expect((err as McpError).cause).toBe(upstream);
+    expect((err as McpError).data).not.toHaveProperty('status');
+  });
+
+  /**
+   * not_found is decided by the structured status the service's HTTP error
+   * carries, never by message wording — a reworded upstream message must not
+   * drop the reason, and an unrelated failure that says "not found" must not
+   * be reported as a missing food.
+   */
+  describe('not_found classification', () => {
+    it('maps a status-404 McpError whose message never says 404 or not found', async () => {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockRejectedValue(fdcHttpError(404, 'No such food'));
+
+      const result = await runToolContract(usdaGetFood, { fdcId: 1 });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.NotFound,
+          message: 'FDC ID 1 not found.',
+          data: {
+            reason: 'not_found',
+            recovery: {
+              hint: 'Verify the FDC ID using usda_search_foods and try again with a valid ID.',
+            },
+          },
+        },
+      });
+      expect(firstText(result.content)).toContain(
+        'Verify the FDC ID using usda_search_foods and try again with a valid ID.',
+      );
+    });
+
+    it.each([
+      ['a plain Error saying "404 Not Found"', new Error('404 Not Found')],
+      [
+        'a non-404 HTTP McpError saying "404" and "not found"',
+        fdcHttpError(503, 'Proxy says 404: upstream route not found'),
+      ],
+    ])('propagates %s unchanged', async (_label, upstream) => {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockRejectedValue(upstream);
+      const ctx = createMockContext({ errors: usdaGetFood.errors });
+
+      await expect(usdaGetFood.handler(usdaGetFood.input.parse({ fdcId: 1 }), ctx)).rejects.toBe(
+        upstream,
+      );
+    });
+  });
+
+  describe('not_found over the real FdcService', () => {
+    beforeEach(async () => {
+      vi.stubEnv('USDA_FDC_API_KEY', 'test-key');
+      http = createFdcFake();
+      http.install();
+      const actual = await vi.importActual<typeof import('@/services/fdc/fdc-service.js')>(
+        '@/services/fdc/fdc-service.js',
+      );
+      const real = new actual.FdcService();
+      const service = await getServiceMock();
+      service.getFoodDetail.mockImplementation(real.getFoodDetail.bind(real));
+    });
+
+    afterEach(() => {
+      http.restore();
+      vi.unstubAllEnvs();
+    });
+
+    it('fails not_found with its recovery hint for an FDC 404', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 999999999 });
+
+      expect(http.calls.map((c) => new URL(c.request.url).pathname)).toEqual([
+        '/fdc/v1/food/999999999',
+      ]);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.NotFound,
+          data: {
+            reason: 'not_found',
+            recovery: {
+              hint: 'Verify the FDC ID using usda_search_foods and try again with a valid ID.',
+            },
+          },
+        },
+      });
+    });
+
+    it('still returns a known food through the same seam', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 168421, nutrients: [1003] });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        fdcId: 168421,
+        nutrients: [{ id: 1003, amount: 2.92 }],
+      });
     });
   });
 
@@ -209,6 +420,34 @@ describe('usdaGetFood', () => {
     };
     const text = firstText(format(output));
     expect(text).toContain('200');
-    expect(text).toContain('200.0g');
+    // gramWeight renders verbatim, as structuredContent carries it
+    expect(text).toContain('**Basis:** 200 g (200g)');
+  });
+
+  it('escapes Markdown syntax in FDC-supplied text so content[] reads back as written', () => {
+    const portion = { description: '1 bar [large] *', gramWeight: 40 };
+    const output = {
+      fdcId: 999,
+      description: 'Crunchy *Star* Bars [Organic] | <b>new</b>',
+      dataType: 'Branded',
+      foodCategory: 'Snacks | Bars',
+      brandOwner: '<b>Acme</b>',
+      brandName: '*Star*',
+      ingredients: 'OATS, HONEY [RAW] | SALT',
+      servingInfo: portion,
+      allPortions: [portion],
+      nutrients: [
+        { id: 1004, name: 'Fat *total* [lipid] | <b>', number: '204', amount: 3, unit: 'g' },
+      ],
+    };
+    const text = firstText(format(output));
+    expect(text).toContain('## Crunchy \\*Star\\* Bars \\[Organic\\] \\| \\<b>new\\</b>');
+    expect(text).toContain('**Category:** Snacks \\| Bars');
+    expect(text).toContain('**Brand Owner:** \\<b>Acme\\</b>');
+    expect(text).toContain('**Brand:** \\*Star\\*');
+    expect(text).toContain('**Ingredients:** OATS, HONEY \\[RAW\\] \\| SALT');
+    expect(text).toContain('**Serving:** 1 bar \\[large\\] \\* = 40g');
+    expect(text).toContain('**All portions:** 1 bar \\[large\\] \\* (40g)');
+    expect(text).toContain('- **Fat \\*total\\* \\[lipid\\] \\| \\<b>** (ID: 1004, SR#: 204): 3 g');
   });
 });

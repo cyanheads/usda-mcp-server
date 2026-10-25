@@ -4,8 +4,13 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
-import { fetchWithTimeout, httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import {
+  JsonRpcErrorCode,
+  McpError,
+  serviceUnavailable,
+  validationError,
+} from '@cyanheads/mcp-ts-core/errors';
+import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import type {
   FdcDataType,
@@ -22,6 +27,8 @@ import type {
 
 const BASE_URL = 'https://api.nal.usda.gov/fdc/v1';
 const TIMEOUT_MS = 15_000;
+/** Total budget for one FDC call across every attempt, backoff, and Retry-After. */
+const DEADLINE_MS = 45_000;
 
 // ---- Normalization helpers ----
 
@@ -132,9 +139,175 @@ function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): Foo
   };
 }
 
+// ---- Search query escaping ----
+
+/** Lucene's token separators: what its classic query parser skips between terms. */
+function isWhitespace(char: string): boolean {
+  return char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '　';
+}
+
+/** Besides whitespace, the characters a regex or range term may follow: a group, an operator, a `field:` colon. */
+const TERM_PREFIXES = new Set(['(', '+', '-', '!', ':']);
+/** Besides whitespace, the characters that may follow a regex or range term: a group close, a boost, a fuzzy slop. */
+const TERM_SUFFIXES = new Set([')', '^', '~']);
+const RANGE_DELIMITERS = new Set(['[', ']', '{', '}']);
+
+function endsTerm(query: string, index: number): boolean {
+  const char = query.charAt(index);
+  return index >= query.length || isWhitespace(char) || TERM_SUFFIXES.has(char);
+}
+
+/**
+ * End (exclusive) of the well-formed `/regex/` term opening at `start`, or -1.
+ * The scan stops at the first unescaped `/` or whitespace, so it never crosses
+ * another regex opener.
+ */
+function regexEnd(query: string, start: number): number {
+  for (let i = start + 1; i < query.length; i++) {
+    const char = query.charAt(i);
+    if (char === '\\') i++;
+    else if (char === '/') return endsTerm(query, i + 1) ? i + 1 : -1;
+    else if (isWhitespace(char)) return -1;
+  }
+  return -1;
+}
+
+/** End of a range bound starting at `index`: escape pairs included, stopping at whitespace or any bracket or brace. */
+function boundEnd(query: string, index: number): number {
+  let i = index;
+  while (i < query.length) {
+    const char = query.charAt(i);
+    if (isWhitespace(char) || RANGE_DELIMITERS.has(char)) break;
+    i += char === '\\' ? 2 : 1;
+  }
+  return Math.min(i, query.length);
+}
+
+function whitespaceEnd(query: string, index: number): number {
+  let i = index;
+  while (i < query.length && isWhitespace(query.charAt(i))) i++;
+  return i;
+}
+
+/**
+ * End (exclusive) of the well-formed `[low TO high]` range term opening at
+ * `start` (either side may be `{`/`}`, either bound `*`), or -1. Bounds hold no
+ * bracket or brace, so the scan never crosses another range opener.
+ */
+function rangeEnd(query: string, start: number): number {
+  const lowerEnd = boundEnd(query, start + 1);
+  if (lowerEnd === start + 1) return -1;
+  const toStart = whitespaceEnd(query, lowerEnd);
+  if (toStart === lowerEnd || !query.startsWith('TO', toStart)) return -1;
+  const upperStart = whitespaceEnd(query, toStart + 2);
+  if (upperStart === toStart + 2) return -1;
+  const upperEnd = boundEnd(query, upperStart);
+  if (upperEnd === upperStart) return -1;
+  const closer = query.charAt(upperEnd);
+  return (closer === ']' || closer === '}') && endsTerm(query, upperEnd + 1) ? upperEnd + 1 : -1;
+}
+
+/**
+ * Escapes the characters FDC's Lucene query parser rejects with a bare 400 and
+ * leaves everything that already works untouched. Escaped: each `/`, `[`, `]`,
+ * `{`, `}` outside a well-formed regex or range term; every `"` when the
+ * unescaped count is odd; and each `(` or `)` that pairs with nothing by depth
+ * (`)(` does not pair).
+ *
+ * A regex term is a `/…/` pair whose opener begins a term (at the start, after
+ * whitespace, `(`, `+`, `-`, `!`, or a `field:` colon), whose closer ends one
+ * (before the end, whitespace, `)`, `^`, or `~`), and whose body holds no
+ * unescaped whitespace or `/`: `/chick.+/`, `description:/chick.+/`. A range
+ * term opens with `[` or `{` at a term start, holds a whitespace-free lower
+ * bound, `TO`, and a whitespace-free upper bound, and closes with `]` or `}`
+ * at a term end: `[a TO c]`, `{* TO 5}`. Both pass through whole, so
+ * `w/o salt`, `trimmed to 1/8" fat`, `beef 1/8 cooked 1/4`, and `beef [raw]`
+ * search literally while regex and range queries keep working.
+ *
+ * Text inside a balanced quoted phrase is literal to Lucene and is left alone.
+ * Quoted phrases, `+`/`-`/`!`, `AND`/`OR`/`NOT`/`&&`/`||`, `*`/`?`, `~`, `^`,
+ * balanced groups, and `field:` prefixes pass through.
+ *
+ * A `\` and the character after it are one escape pair and pass through as
+ * written, so nothing is double-escaped. A trailing lone `\` is sent as-is:
+ * FDC rejects it, and the `query_syntax` recovery names it, rather than this
+ * function guessing whether a literal backslash was meant.
+ *
+ * Linear in UTF-16 code units — no regex. Each term scan stops at the next
+ * opener of its own kind, so no character is rescanned by more than one regex
+ * scan and one range scan.
+ */
+export function escapeFdcQuery(query: string): string {
+  const length = query.length;
+
+  let quotes = 0;
+  for (let i = 0; i < length; i++) {
+    const char = query.charAt(i);
+    if (char === '\\') i++;
+    else if (char === '"') quotes++;
+  }
+  const quotesBalanced = quotes % 2 === 0;
+
+  const needsEscape = new Uint8Array(length);
+  const openers: number[] = [];
+  let inPhrase = false;
+  /** Whether the character at `i` may begin a regex or range term. */
+  let termStart = true;
+  for (let i = 0; i < length; i++) {
+    const char = query.charAt(i);
+    let nextStartsTerm = false;
+    if (char === '\\') {
+      i++;
+    } else if (char === '"') {
+      if (quotesBalanced) inPhrase = !inPhrase;
+      else needsEscape[i] = 1;
+    } else if (inPhrase) {
+      // Literal phrase text.
+    } else if (char === '/' || char === '[' || char === '{') {
+      const end = termStart ? (char === '/' ? regexEnd(query, i) : rangeEnd(query, i)) : -1;
+      if (end === -1) needsEscape[i] = 1;
+      else i = end - 1;
+    } else if (char === ']' || char === '}') {
+      needsEscape[i] = 1;
+    } else if (char === '(') {
+      openers.push(i);
+      nextStartsTerm = true;
+    } else if (char === ')') {
+      if (openers.pop() === undefined) needsEscape[i] = 1;
+    } else {
+      nextStartsTerm = isWhitespace(char) || TERM_PREFIXES.has(char);
+    }
+    termStart = nextStartsTerm;
+  }
+  for (const index of openers) needsEscape[index] = 1;
+
+  let out = '';
+  let copiedTo = 0;
+  for (let i = 0; i < length; i++) {
+    if (needsEscape[i] === 1) {
+      out += `${query.slice(copiedTo, i)}\\`;
+      copiedTo = i;
+    }
+  }
+  return out + query.slice(copiedTo);
+}
+
 // ---- Request helper ----
 
-function fetchFdc<T>(
+/**
+ * One FDC call, retried as a single ladder: `TIMEOUT_MS` per attempt, up to 3
+ * retries with exponential backoff, all inside a `DEADLINE_MS` wall-clock
+ * budget that also covers every honored `Retry-After`. Every tool and resource
+ * makes exactly one call, so the budget bounds the whole tool call and its
+ * typed error lands before a 60 s client timeout does. Both POST endpoints are
+ * reads, so retrying them is safe.
+ *
+ * @throws `Timeout` with `data.reason: 'retry_deadline_exceeded'` when the
+ *   budget runs out — or that attempt's `RateLimited` error when the last
+ *   attempt to complete before the cut-off was a 429, since "wait and call
+ *   again" is then the caller's real next move.
+ */
+async function fetchFdc<T>(
   path: string,
   options: {
     method?: 'GET' | 'POST';
@@ -150,50 +323,67 @@ function fetchFdc<T>(
 ): Promise<T> {
   const apiKey = getServerConfig().fdcApiKey;
   const url = new URL(`${BASE_URL}${path}`);
+  /**
+   * The deadline's expiry carries the cut-off attempt as its `cause`, which
+   * never reaches the wire — so a ladder ending in slow 429s would read as an
+   * outage. Holds the latest completed attempt's 429, cleared by any other outcome.
+   */
+  let lastRateLimit: McpError | undefined;
 
-  return withRetry(
-    async () => {
-      const fetchOptions: RequestInit = {
-        method: options.method ?? 'GET',
+  try {
+    return await withRetry(
+      async ({ signal }) => {
+        try {
+          // fetchWithTimeout throws a status-mapped McpError on every non-2xx.
+          const response = await fetchWithTimeout(url.toString(), TIMEOUT_MS, options.ctx, {
+            method: options.method ?? 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Api-Key': apiKey,
+            },
+            ...(options.body != null && { body: JSON.stringify(options.body) }),
+            // The attempt signal composes ctx.signal with the deadline clock.
+            signal,
+            ...(options.expectedStatuses && { expectedStatuses: options.expectedStatuses }),
+          });
+
+          const text = await response.text();
+          if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
+            throw serviceUnavailable(
+              'USDA FDC API returned HTML instead of JSON — likely rate-limited.',
+            );
+          }
+
+          return JSON.parse(text) as T;
+        } catch (error) {
+          // Track the latest completed attempt only; one the deadline cut off leaves it as it was.
+          if (!signal.aborted) {
+            lastRateLimit =
+              error instanceof McpError && error.code === JsonRpcErrorCode.RateLimited
+                ? error
+                : undefined;
+          }
+          throw error;
+        }
+      },
+      {
+        operation: `FdcService${path}`,
+        context: options.ctx,
+        baseDelayMs: 1000,
         signal: options.ctx.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Api-Key': apiKey,
-        },
-      };
-      if (options.body != null) {
-        fetchOptions.body = JSON.stringify(options.body);
-      }
-
-      const response = await fetchWithTimeout(url.toString(), TIMEOUT_MS, options.ctx, {
-        ...fetchOptions,
-        signal: options.ctx.signal,
-        ...(options.expectedStatuses && { expectedStatuses: options.expectedStatuses }),
-      });
-
-      if (!response.ok) {
-        throw await httpErrorFromResponse(response, {
-          service: 'USDA FDC',
-          data: { path },
-        });
-      }
-
-      const text = await response.text();
-      if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
-        throw serviceUnavailable(
-          'USDA FDC API returned HTML instead of JSON — likely rate-limited.',
-        );
-      }
-
-      return JSON.parse(text) as T;
-    },
-    {
-      operation: `FdcService${path}`,
-      context: options.ctx,
-      baseDelayMs: 1000,
-      signal: options.ctx.signal,
-    },
-  );
+        deadlineMs: DEADLINE_MS,
+      },
+    );
+  } catch (error) {
+    if (
+      lastRateLimit &&
+      error instanceof McpError &&
+      error.data?.reason === 'retry_deadline_exceeded'
+    ) {
+      throw lastRateLimit;
+    }
+    throw error;
+  }
 }
 
 // ---- Service class ----
@@ -218,10 +408,15 @@ export class FdcService {
     totalPages: number;
     foods: SearchResultFood[];
   }> {
-    ctx.log.debug('Searching FDC foods', { query: params.query, dataType: params.dataType });
+    const fdcQuery = escapeFdcQuery(params.query);
+    ctx.log.debug('Searching FDC foods', {
+      query: params.query,
+      fdcQuery,
+      dataType: params.dataType,
+    });
 
     const body: Record<string, unknown> = {
-      query: params.query,
+      query: fdcQuery,
       pageSize: params.pageSize ?? 10,
       pageNumber: params.pageNumber ?? 1,
     };
@@ -229,11 +424,28 @@ export class FdcService {
     if (params.brandOwner?.trim()) body.brandOwner = params.brandOwner.trim();
     if (params.foodCategory?.trim()) body.foodCategory = params.foodCategory.trim();
 
-    const raw = await fetchFdc<RawSearchResponse>('/foods/search', {
-      method: 'POST',
-      body,
-      ctx,
-    });
+    let raw: RawSearchResponse;
+    try {
+      /**
+       * A 400 here is FDC's Lucene parser refusing the query — a caller-input
+       * outcome declared as `query_syntax`, so it logs at `debug`.
+       */
+      raw = await fetchFdc<RawSearchResponse>('/foods/search', {
+        method: 'POST',
+        body,
+        ctx,
+        expectedStatuses: [400],
+      });
+    } catch (error) {
+      if (error instanceof McpError && error.data?.status === 400) {
+        throw validationError(
+          `FDC rejected the query syntax of "${params.query}".`,
+          { reason: 'query_syntax', query: params.query },
+          { cause: error },
+        );
+      }
+      throw error;
+    }
 
     return {
       totalHits: raw.totalHits ?? 0,
@@ -264,8 +476,6 @@ export class FdcService {
       expectedStatuses: [404],
     });
 
-    // The API returns a 200 with the object even for missing IDs in some edge cases,
-    // but fdcId would be 0 or description missing. The 404 path goes through httpErrorFromResponse.
     return normalizeFoodDetail(raw, nutrientFilter);
   }
 

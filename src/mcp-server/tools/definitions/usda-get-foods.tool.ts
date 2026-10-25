@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
 
 export const usdaGetFoods = tool('usda_get_foods', {
@@ -102,13 +103,16 @@ export const usdaGetFoods = tool('usda_get_foods', {
       `**${result.foods.length} foods fetched** | **${result.failed.length} failed**\n`,
     ];
 
+    // FDC-supplied free text goes through escapeMarkdownInline so content[] reads back as written.
     for (const food of result.foods) {
-      lines.push(`### ${food.description}`);
+      lines.push(`### ${escapeMarkdownInline(food.description)}`);
       lines.push(`**FDC ID:** ${food.fdcId} | **Type:** ${food.dataType}`);
       if (food.nutrients.length > 0) {
         lines.push('**Nutrients (per 100g):**');
         for (const n of food.nutrients) {
-          lines.push(`- ${n.name} (ID: ${n.id}, SR#: ${n.number}): ${n.amount} ${n.unit}`);
+          lines.push(
+            `- ${escapeMarkdownInline(n.name)} (ID: ${n.id}, SR#: ${n.number}): ${n.amount} ${n.unit}`,
+          );
         }
       } else {
         lines.push('*No nutrients returned for this food.*');
@@ -119,7 +123,7 @@ export const usdaGetFoods = tool('usda_get_foods', {
     if (result.failed.length > 0) {
       lines.push('### Failed IDs');
       for (const f of result.failed) {
-        lines.push(`- FDC ID ${f.fdcId}: ${f.error}`);
+        lines.push(`- FDC ID ${f.fdcId}: ${escapeMarkdownInline(f.error)}`);
       }
     }
 

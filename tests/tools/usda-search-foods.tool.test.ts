@@ -289,6 +289,69 @@ describe('usdaSearchFoods', () => {
     expect(text).toContain('2022-01-01');
   });
 
+  describe('serving line', () => {
+    const servingLine = (food: Record<string, unknown>) => {
+      const text = firstText(
+        format({
+          totalHits: 1,
+          currentPage: 1,
+          totalPages: 1,
+          foods: [
+            { fdcId: 2078244, description: 'MILK', dataType: 'Branded', nutrients: [], ...food },
+          ],
+        }),
+      );
+      return text.split('\n').find((line) => line.startsWith('**Serving:**'));
+    };
+
+    it('renders the unit FDC sent, volume included', () => {
+      expect(servingLine({ servingSize: 240, servingSizeUnit: 'ml' })).toBe('**Serving:** 240ml');
+    });
+
+    it('renders the size alone when FDC sends no unit', () => {
+      expect(servingLine({ servingSize: 240 })).toBe('**Serving:** 240');
+    });
+
+    it('still renders grams with the household serving in parentheses', () => {
+      expect(
+        servingLine({ servingSize: 42, servingSizeUnit: 'g', householdServingFullText: '2 bars' }),
+      ).toBe('**Serving:** 42g (2 bars)');
+    });
+
+    it('omits the line when FDC sends no serving size', () => {
+      expect(servingLine({ servingSizeUnit: 'g' })).toBeUndefined();
+    });
+  });
+
+  it('escapes Markdown syntax in FDC-supplied text so content[] reads back as written', () => {
+    const output = {
+      totalHits: 1,
+      currentPage: 1,
+      totalPages: 1,
+      foods: [
+        {
+          fdcId: 999,
+          description: 'Crunchy *Star* Bars [Organic]',
+          dataType: 'Branded',
+          foodCategory: 'Snacks | Bars',
+          brandOwner: '<b>Acme</b>',
+          brandName: '*Star*',
+          servingSize: 40,
+          servingSizeUnit: 'g',
+          householdServingFullText: '1 bar [large] *',
+          nutrients: [{ id: 1004, name: 'Fat *total* [lipid]', amount: 3, unit: 'G' }],
+        },
+      ],
+    };
+    const text = firstText(format(output));
+    expect(text).toContain('### Crunchy \\*Star\\* Bars \\[Organic\\]');
+    expect(text).toContain('**Category:** Snacks \\| Bars');
+    expect(text).toContain('**Brand Owner:** \\<b>Acme\\</b>');
+    expect(text).toContain('**Brand:** \\*Star\\*');
+    expect(text).toContain('**Serving:** 40g (1 bar \\[large\\] \\*)');
+    expect(text).toContain('**Nutrients (per 100g):** Fat \\*total\\* \\[lipid\\] (ID:1004): 3G');
+  });
+
   it('handles sparse upstream payload with no optional fields', async () => {
     const service = await getServiceMock();
     service.searchFoods.mockResolvedValue({

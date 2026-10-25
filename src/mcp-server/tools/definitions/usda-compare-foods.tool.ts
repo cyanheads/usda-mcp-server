@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
 
 /** Default nutrient IDs for comparison when none are specified. */
@@ -40,7 +41,7 @@ function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
 export const usdaCompareFoods = tool('usda_compare_foods', {
   title: 'Compare USDA Foods',
   description:
-    'Compare nutrients side-by-side for 2–5 foods. Returns a structured table — one row per nutrient, one column per food — formatted as markdown. Best for "spinach vs kale iron" or "which has more protein?" questions. Omit nutrients[] to use the 12 most common defaults (energy, protein, fat, saturated fat, carbs, fiber, sugars, sodium, potassium, calcium, iron, vitamin C); provide nutrients[] with specific FDC IDs to compare different nutrients. All values are scaled to the same gram basis (default 100g). If one or more FDC IDs are not found, the comparison proceeds with the valid foods — only throws too_few_foods when fewer than 2 IDs return data.',
+    'Compare nutrients side-by-side for 2–5 foods. Returns a structured table — one row per nutrient, one column per food — formatted as markdown. Best for "spinach vs kale iron" or "which has more protein?" questions. Omit nutrients[] to use the 12 most common defaults (energy, protein, fat, saturated fat, carbs, fiber, sugars, sodium, potassium, calcium, iron, vitamin C); provide nutrients[] with specific FDC IDs to compare different nutrients. All values are scaled to the same basis, quantity in unit: default 100 g, so unit="oz" alone compares per 100 oz and quantity alone is grams. If one or more FDC IDs are not found, the comparison proceeds with the valid foods — only throws too_few_foods when fewer than 2 IDs return data.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcIds: z
@@ -59,24 +60,28 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       .positive()
       .default(100)
       .describe(
-        'Gram basis for comparison. All values scaled to this amount. Must be positive. Default 100.',
+        'Amount of food, in unit, that every value is scaled to. Must be positive. Default 100.',
       ),
     unit: z
       .enum(['g', 'oz', 'lb', 'kg'])
       .default('g')
       .describe(
-        'Unit for quantity. Default "g". Does not support "serving" (use a fixed gram basis for consistent comparison).',
+        'Unit for quantity. Default "g". Does not support "serving" (each food\'s portion weight differs, so a serving basis would not compare equal amounts).',
       ),
   }),
   output: z.object({
     basis: z
       .object({
-        quantity: z.number().describe('Numeric quantity provided in the request.'),
-        unit: z.string().describe('Unit provided in the request (g, oz, lb, or kg).'),
+        quantity: z
+          .number()
+          .describe('Quantity applied, in unit — the requested value or the default 100.'),
+        unit: z
+          .string()
+          .describe('Unit applied (g, oz, lb, or kg) — the requested value or the default "g".'),
         gramWeight: z
           .number()
           .describe(
-            'Gram weight resolved from quantity+unit — all nutrient values are per this many grams.',
+            'Gram weight resolved from quantity and unit — all nutrient values are per this many grams.',
           ),
       })
       .describe('The common scaling basis applied to all nutrient values.'),
@@ -145,7 +150,8 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
     const nutrientIds = input.nutrients?.length ? input.nutrients : DEFAULT_COMPARE_NUTRIENTS;
     ctx.log.info('Comparing foods', { fdcIds: input.fdcIds, nutrientCount: nutrientIds.length });
 
-    const gramWeight = toGrams(input.quantity, input.unit);
+    // Same 4-decimal precision as nutrient values, so format() can render it verbatim
+    const gramWeight = Number(toGrams(input.quantity, input.unit).toFixed(4));
     const scaleFactor = gramWeight / 100;
 
     const { foods: rawFoods, failed } = await getFdcService().getFoodsBatch(
@@ -212,16 +218,19 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
     const lines: string[] = [];
 
     lines.push(
-      `**Basis:** ${result.basis.quantity} ${result.basis.unit} (${result.basis.gramWeight.toFixed(1)}g)\n`,
+      `**Basis:** ${result.basis.quantity} ${result.basis.unit} (${result.basis.gramWeight}g)\n`,
     );
 
-    const foodHeaders = result.foods.map((f) => f.description).join(' | ');
+    // FDC-supplied free text goes through escapeMarkdownInline, which also escapes `|` inside table cells.
+    const foodHeaders = result.foods.map((f) => escapeMarkdownInline(f.description)).join(' | ');
     lines.push(`| Nutrient | ${foodHeaders} |`);
     lines.push(`| --- | ${result.foods.map(() => '---').join(' | ')} |`);
 
     for (const row of result.nutrients) {
       const cells = row.values.map((v) => (v === null ? '—' : String(v)));
-      lines.push(`| ${row.name} (${row.unit}) [ID:${row.id}] | ${cells.join(' | ')} |`);
+      lines.push(
+        `| ${escapeMarkdownInline(row.name)} (${row.unit}) [ID:${row.id}] | ${cells.join(' | ')} |`,
+      );
     }
 
     if (result.missingData && result.missingData.length > 0) {
@@ -249,7 +258,9 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
     // format-parity: structuredContent carries the foods array, text must too
     lines.push('\n**Compared foods:**');
     for (const f of result.foods) {
-      lines.push(`- **${f.description}** (FDC ID: ${f.fdcId}, type: ${f.dataType})`);
+      lines.push(
+        `- **${escapeMarkdownInline(f.description)}** (FDC ID: ${f.fdcId}, type: ${f.dataType})`,
+      );
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

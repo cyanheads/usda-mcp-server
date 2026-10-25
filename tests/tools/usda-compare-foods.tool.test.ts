@@ -145,6 +145,48 @@ describe('usdaCompareFoods', () => {
     expect(iron?.values[0]).toBeCloseTo(2.71 * 0.5, 2);
   });
 
+  /**
+   * quantity is an amount in unit, with the schema defaults 100 and "g". A lone
+   * unit therefore compares per 100 of it, and a lone quantity is grams.
+   */
+  describe('basis', () => {
+    const compare = async (args: { quantity?: number; unit?: 'g' | 'oz' | 'lb' | 'kg' }) => {
+      const ctx = createMockContext({ errors: usdaCompareFoods.errors });
+      const input = usdaCompareFoods.input.parse({ fdcIds: [168462, 168421], ...args });
+      return usdaCompareFoods.handler(input, ctx);
+    };
+
+    it('compares per 100 of a lone unit', async () => {
+      const result = await compare({ unit: 'oz' });
+
+      expect(result.basis).toEqual({ quantity: 100, unit: 'oz', gramWeight: 2834.95 });
+      expect(result.nutrients.find((n) => n.id === 1003)?.values).toEqual([81.0796, 82.7805]);
+    });
+
+    it('reads a lone quantity as grams', async () => {
+      const result = await compare({ quantity: 30 });
+
+      expect(result.basis).toEqual({ quantity: 30, unit: 'g', gramWeight: 30 });
+    });
+
+    it('rounds a mass conversion to the same 4 decimals as nutrient values', async () => {
+      // 3 × 28.3495 is 85.04849999999999 in binary floating point
+      const result = await compare({ quantity: 3, unit: 'oz' });
+
+      expect(result.basis.gramWeight).toBe(85.0485);
+    });
+
+    it('renders the basis line with the exact gram weight basis carries', async () => {
+      const basisLines = async (args: Parameters<typeof compare>[0]) =>
+        firstText(format(await compare(args)))
+          .split('\n')
+          .filter((line) => line.startsWith('**Basis:**'));
+
+      expect(await basisLines({ quantity: 3, unit: 'oz' })).toEqual(['**Basis:** 3 oz (85.0485g)']);
+      expect(await basisLines({})).toEqual(['**Basis:** 100 g (100g)']);
+    });
+  });
+
   it('passes requested nutrient IDs to the service', async () => {
     const service = await getServiceMock();
     const ctx = createMockContext({ errors: usdaCompareFoods.errors });
@@ -233,6 +275,20 @@ describe('usdaCompareFoods', () => {
     // FDC IDs appear in the food summary section
     expect(text).toContain('168462');
     expect(text).toContain('168421');
+  });
+
+  it('escapes a pipe in a food description so the table keeps one column per food', () => {
+    const output = {
+      basis: { quantity: 100, unit: 'g', gramWeight: 100 },
+      foods: [
+        { fdcId: 1, description: 'Spinach | raw', dataType: 'Branded' },
+        { fdcId: 2, description: 'Kale, *baby*', dataType: 'Branded' },
+      ],
+      nutrients: [{ id: 1089, name: 'Iron, Fe', unit: 'MG', values: [2.71, 1.47] }],
+    };
+    const text = firstText(format(output));
+    expect(text).toContain('| Nutrient | Spinach \\| raw | Kale, \\*baby\\* |');
+    expect(text).toContain('- **Spinach \\| raw** (FDC ID: 1, type: Branded)');
   });
 
   it('formats missing data section when present', () => {

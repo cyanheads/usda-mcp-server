@@ -4,7 +4,7 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
 
 /**
@@ -55,11 +55,9 @@ export const usdaFoodResource = resource('usda://food/{fdcId}', {
     const food = await getFdcService()
       .getFoodDetail(fdcId, undefined, ctx)
       .catch((err: unknown) => {
-        if (
-          err instanceof Error &&
-          (err.message.includes('404') || err.message.toLowerCase().includes('not found'))
-        ) {
-          throw ctx.fail('not_found', `FDC ID ${fdcId} not found.`, { fdcId });
+        // FDC's HTTP 404 (the status the service's McpError carries) → not_found contract entry
+        if (err instanceof McpError && err.data?.status === 404) {
+          throw ctx.fail('not_found', `FDC ID ${fdcId} not found.`, { fdcId }, { cause: err });
         }
         throw err;
       });

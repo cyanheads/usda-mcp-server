@@ -225,4 +225,24 @@ describe('usdaGetFoods', () => {
     expect(text).toContain('1003');
     expect(text).toContain('999');
   });
+
+  it('escapes Markdown syntax in FDC-supplied text so content[] reads back as written', () => {
+    const output = {
+      foods: [
+        {
+          fdcId: 999,
+          description: 'Crunchy *Star* Bars [Organic] | <b>new</b>',
+          dataType: 'Branded',
+          nutrients: [
+            { id: 1004, name: 'Fat *total* [lipid] | <b>', number: '204', amount: 3, unit: 'g' },
+          ],
+        },
+      ],
+      failed: [{ fdcId: 1, error: 'FDC ID 1 *not* found [batch] | <b>' }],
+    };
+    const text = firstText(format(output));
+    expect(text).toContain('### Crunchy \\*Star\\* Bars \\[Organic\\] \\| \\<b>new\\</b>');
+    expect(text).toContain('- Fat \\*total\\* \\[lipid\\] \\| \\<b> (ID: 1004, SR#: 204): 3 g');
+    expect(text).toContain('- FDC ID 1: FDC ID 1 \\*not\\* found \\[batch\\] \\| \\<b>');
+  });
 });

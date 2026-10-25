@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
 import type { FdcDataType } from '@/services/fdc/types.js';
 
@@ -18,7 +19,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       .string()
       .min(1)
       .describe(
-        'Search terms — food name, ingredient, or UPC/GTIN code for branded products. Examples: "chicken breast raw", "banana", "012345678901".',
+        'Search terms — food name, ingredient, or UPC/GTIN code for branded products. Examples: "chicken breast raw", "banana", "012345678901". FDC reads Lucene syntax: "quoted phrases", +required and -excluded terms, AND/OR/NOT, wildcards (chick*), fuzzy matches (beeef~), boosts (beef^5), grouping parentheses, field:value, regex terms (/chick.*/), and ranges ([a TO c], {a TO c}). Any other slash, bracket, or brace (1/8, w/o, beef [raw]) and unpaired quotes or parentheses are sent as literal characters.',
       ),
     dataType: z
       .array(z.enum(['SR Legacy', 'Foundation', 'Survey (FNDDS)', 'Branded']))
@@ -88,11 +89,13 @@ export const usdaSearchFoods = tool('usda_search_foods', {
             servingSize: z
               .number()
               .optional()
-              .describe('Serving size in grams from the product label. Branded only.'),
+              .describe('Serving size from the product label, in servingSizeUnit. Branded only.'),
             servingSizeUnit: z
               .string()
               .optional()
-              .describe('Unit for servingSize (usually "g"). Branded only.'),
+              .describe(
+                'Unit for servingSize as FDC reports it: mass ("g", "GRM"), volume ("ml", "MLT"), or another unit ("IU", "MG"). Branded only.',
+              ),
             householdServingFullText: z
               .string()
               .optional()
@@ -132,6 +135,16 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'The query is empty or contains only whitespace.',
       recovery: 'Provide a food name, ingredient, or UPC/GTIN code as the query.',
+      severity: 'notice',
+    },
+    {
+      reason: 'query_syntax',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'FDC rejected the query syntax, e.g. a dangling operator or a trailing backslash.',
+      recovery:
+        'FDC rejected the query syntax. Remove a leading or trailing operator (AND, OR, -, !, ^) or a trailing backslash, or put a backslash before a character meant literally.',
+      severity: 'notice',
+      thrownBy: 'service',
     },
     {
       reason: 'no_results',
@@ -208,20 +221,21 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       `**${result.totalHits} total hits** — page ${result.currentPage} of ${result.totalPages}\n`,
     ];
 
+    // FDC-supplied free text goes through escapeMarkdownInline so content[] reads back as written.
     for (const food of result.foods) {
-      lines.push(`### ${food.description}`);
+      lines.push(`### ${escapeMarkdownInline(food.description)}`);
       lines.push(`**FDC ID:** ${food.fdcId} | **Type:** ${food.dataType}`);
-      if (food.foodCategory) lines.push(`**Category:** ${food.foodCategory}`);
-      if (food.brandOwner) lines.push(`**Brand Owner:** ${food.brandOwner}`);
-      if (food.brandName) lines.push(`**Brand:** ${food.brandName}`);
+      if (food.foodCategory) lines.push(`**Category:** ${escapeMarkdownInline(food.foodCategory)}`);
+      if (food.brandOwner) lines.push(`**Brand Owner:** ${escapeMarkdownInline(food.brandOwner)}`);
+      if (food.brandName) lines.push(`**Brand:** ${escapeMarkdownInline(food.brandName)}`);
       if (food.servingSize != null) {
         lines.push(
-          `**Serving:** ${food.servingSize}${food.servingSizeUnit ?? 'g'}${food.householdServingFullText ? ` (${food.householdServingFullText})` : ''}`,
+          `**Serving:** ${food.servingSize}${food.servingSizeUnit ? escapeMarkdownInline(food.servingSizeUnit) : ''}${food.householdServingFullText ? ` (${escapeMarkdownInline(food.householdServingFullText)})` : ''}`,
         );
       }
       if (food.nutrients.length > 0) {
         lines.push(
-          `**Nutrients (per 100g):** ${food.nutrients.map((n) => `${n.name} (ID:${n.id}): ${n.amount}${n.unit}`).join(' | ')}`,
+          `**Nutrients (per 100g):** ${food.nutrients.map((n) => `${escapeMarkdownInline(n.name)} (ID:${n.id}): ${n.amount}${n.unit}`).join(' | ')}`,
         );
       }
       if (food.publishedDate) lines.push(`**Published:** ${food.publishedDate}`);
