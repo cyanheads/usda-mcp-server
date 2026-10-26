@@ -3,7 +3,7 @@
 /.claude/
 /.agents/
 /framework-skills/
-/docs/idea.md
+/docs/
 /logs/
 /Dockerfile
 /bun.lock
@@ -15,3 +15,17 @@
 /.cache/
 /coverage/
 /tests/
+/src/
+/scripts/
+/changelog/
+/.github/
+/.vscode/
+/.claude-plugin/
+/.codex-plugin/
+/plugin.json
+/mcp.json
+/CLAUDE.md
+/AGENTS.md
+/.dockerignore
+/.gitattributes
+/devcheck.config.json

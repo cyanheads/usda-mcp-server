@@ -1,0 +1,29 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "usda-mcp-server",
+  "version": "0.1.13",
+  "description": "Search foods, compare nutrients, and look up the full USDA FoodData Central database via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/usda-mcp-server#readme",
+  "repository": "git+https://github.com/cyanheads/usda-mcp-server.git",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "usda",
+    "fdc",
+    "fooddata-central",
+    "nutrition",
+    "food",
+    "nutrients",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http"
+  ]
+}
