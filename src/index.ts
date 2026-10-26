@@ -13,9 +13,10 @@ await createApp({
   name: 'usda-mcp-server',
   title: 'usda-mcp-server',
   /**
-   * The listing surfaces are fixed at build time — five tools, two resources,
-   * no prompts, no scope-dependent filtering — so a 2026-07-28 client can hold
-   * them publicly for an hour. `resources/read` is deliberately absent: the
+   * The listing surfaces are fixed at build time — five tools, two domain
+   * resources and the published skill, no prompts or scope-dependent filtering —
+   * so a 2026-07-28 client can hold them publicly for an hour.
+   * `resources/read` is deliberately absent: the
    * food resource proxies live FDC records, and only the bundled nutrient
    * reference is cacheable, which it declares itself.
    */
@@ -32,6 +33,7 @@ await createApp({
   sessionMode: 'stateless',
   tools: allToolDefinitions,
   resources: allResourceDefinitions,
+  skills: 'skills',
   prompts: [],
   instructions:
     'USDA FoodData Central (FDC) — authoritative US food composition database (~400K+ foods). Key workflow: usda_search_foods → fdcId → usda_get_food (single), usda_get_foods (batch), or usda_compare_foods (comparison). Use usda_list_nutrients to resolve nutrient names to numeric IDs before filtering.',

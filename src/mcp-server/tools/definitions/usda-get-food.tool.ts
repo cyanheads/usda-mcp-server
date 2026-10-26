@@ -24,7 +24,7 @@ function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
 export const usdaGetFood = tool('usda_get_food', {
   title: 'Get USDA Food',
   description:
-    'Get the full nutrient profile for one food by FDC ID. Returns all available nutrients (or a filtered subset via the nutrients[] param) with optional per-portion scaling. Use usda_search_foods to discover FDC IDs. Provide unit, optionally with quantity, to scale all nutrient values from per-100g to that amount (e.g. quantity=200, unit="g" → per-200g values). quantity defaults to 100 for g, oz, lb, and kg and to 1 for serving; unit="serving" is the food\'s first defined portion weight times quantity (quantity=2, unit="serving" → two portions). quantity without unit is rejected. Narrow nutrients[] to specific IDs to reduce response size for focused queries.',
+    'Get the full nutrient profile for one food by FDC ID. Returns all available nutrients (or a filtered subset via the nutrients[] param) with optional per-portion scaling. Use usda_search_foods to discover FDC IDs. Provide unit, optionally with quantity, to scale all nutrient values from per-100g to that amount (e.g. quantity=200, unit="g" → per-200g values). quantity defaults to 100 for g, oz, lb, and kg and to 1 for serving. Serving uses the first valid portion, or a positive finite Branded label size in g/GRM/GM (case-insensitive) when no portion exists; quantity multiplies that weight. Other label units require an explicit mass-unit request. quantity without unit is rejected. Narrow nutrients[] to specific IDs to reduce response size for focused queries.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcId: z
@@ -49,7 +49,7 @@ export const usdaGetFood = tool('usda_get_food', {
       .enum(['g', 'oz', 'lb', 'kg', 'serving'])
       .optional()
       .describe(
-        'Unit for quantity. "serving" is the food\'s first defined portion weight, multiplied by quantity. Required when quantity is provided. Given alone, scales to 100 g, oz, lb, or kg, or to 1 serving.',
+        'Unit for quantity. "serving" uses the first valid portion weight, or a Branded label size in g/GRM/GM (case-insensitive) when no portion exists, multiplied by quantity. Required when quantity is provided. Given alone, scales to 100 g, oz, lb, or kg, or to 1 serving.',
       ),
   }),
   output: z.object({
@@ -72,11 +72,17 @@ export const usdaGetFood = tool('usda_get_food', {
     ingredients: z.string().optional().describe('Ingredient list from label. Branded items only.'),
     servingInfo: z
       .object({
-        description: z.string().describe('Portion description (e.g. "1 cup", "4 oz").'),
+        description: z
+          .string()
+          .describe(
+            'Portion description, or label-serving provenance with source size, unit and available household text.',
+          ),
         gramWeight: z.number().describe('Gram weight of this portion.'),
       })
       .optional()
-      .describe('First available portion definition, if present.'),
+      .describe(
+        'First available portion definition, or a Branded gram-label serving identified in its description.',
+      ),
     allPortions: z
       .array(
         z
@@ -99,7 +105,7 @@ export const usdaGetFood = tool('usda_get_food', {
         gramWeight: z
           .number()
           .describe(
-            'Gram weight resolved from quantity and unit (for serving, quantity × the first portion weight) — all nutrient values are per this many grams.',
+            'Gram weight resolved from quantity and unit (for serving, quantity × servingInfo.gramWeight) — all nutrient values are per this many grams.',
           ),
       })
       .optional()
@@ -145,7 +151,7 @@ export const usdaGetFood = tool('usda_get_food', {
     {
       reason: 'no_portion_data',
       code: JsonRpcErrorCode.NotFound,
-      when: 'unit="serving" was requested but the food has no portion data.',
+      when: 'unit="serving" was requested but the food has no valid portion or supported Branded gram-label serving.',
       recovery: 'Use a gram-based unit (g, oz, lb, kg) instead of serving for this food.',
       severity: 'notice',
     },
@@ -176,6 +182,21 @@ export const usdaGetFood = tool('usda_get_food', {
       });
 
     // Portion scaling — unit alone takes its default quantity (1 serving, 100 of a mass unit)
+    let servingInfo = food.portions[0];
+    if (
+      !servingInfo &&
+      food.dataType === 'Branded' &&
+      food.servingSize != null &&
+      Number.isFinite(food.servingSize) &&
+      food.servingSize > 0 &&
+      food.servingSizeUnit &&
+      ['g', 'grm', 'gm'].includes(food.servingSizeUnit.toLowerCase())
+    ) {
+      servingInfo = {
+        description: `Label serving: ${food.servingSize} ${food.servingSizeUnit}${food.householdServingFullText ? ` (${food.householdServingFullText})` : ''}`,
+        gramWeight: food.servingSize,
+      };
+    }
     let scaledTo: { quantity: number; unit: string; gramWeight: number } | undefined;
     let scaleFactor = 1;
 
@@ -184,15 +205,19 @@ export const usdaGetFood = tool('usda_get_food', {
       let gramWeight: number;
 
       if (input.unit === 'serving') {
-        const [portion] = food.portions;
-        if (!portion) {
+        if (!servingInfo) {
           throw ctx.fail(
             'no_portion_data',
             `Food "${food.description}" (ID ${food.fdcId}) has no portion data.`,
-            { fdcId: food.fdcId },
+            {
+              fdcId: food.fdcId,
+              recovery: {
+                hint: `No supported serving weight is available.${food.servingSize != null ? ` Label serving size: ${food.servingSize}.` : ''}${food.servingSizeUnit ? ` Label serving unit: ${food.servingSizeUnit}.` : ''} Use an explicit mass-unit request with quantity and unit (g, oz, lb, kg).`,
+              },
+            },
           );
         }
-        gramWeight = quantity * portion.gramWeight;
+        gramWeight = quantity * servingInfo.gramWeight;
       } else {
         gramWeight = toGrams(quantity, input.unit);
       }
@@ -213,8 +238,8 @@ export const usdaGetFood = tool('usda_get_food', {
       ...(food.brandName && { brandName: food.brandName }),
       ...(food.ingredients && { ingredients: food.ingredients }),
       ...(scaledTo && { scaledTo }),
+      ...(servingInfo && { servingInfo }),
       ...(food.portions.length > 0 && {
-        servingInfo: food.portions[0],
         allPortions: food.portions,
       }),
       nutrients: food.nutrients.map((n) => ({

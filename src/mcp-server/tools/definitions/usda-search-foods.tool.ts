@@ -12,7 +12,7 @@ import type { FdcDataType } from '@/services/fdc/types.js';
 export const usdaSearchFoods = tool('usda_search_foods', {
   title: 'Search USDA Foods',
   description:
-    'Search USDA FoodData Central foods by keyword. Returns matching foods with FDC IDs and a preview of key nutrients (energy, protein, fat, carbs — not guaranteed complete). Use the returned fdcId with usda_get_food for the full nutrient profile, or usda_compare_foods for side-by-side comparisons. When dataType is omitted, defaults to SR Legacy (common whole foods with complete profiles) — or to Branded when brandOwner is set, since only Branded records carry one. Set dataType to ["Branded"] for packaged products, or include a UPC/GTIN code as the query. Pass brandOwner (e.g. "General Mills") to narrow branded results.',
+    'Search USDA FoodData Central foods by keyword. Returns matching foods with FDC IDs and available preview nutrients: protein (1003), fat (1004), carbohydrate (1005), fiber (1079), and energy (1008, 1062, 2047, 2048), preserving distinct energy estimates. Missing nutrients are omitted. Use the returned fdcId with usda_get_food for other nutrients or the full profile, or usda_compare_foods for side-by-side comparisons. When dataType is omitted, defaults to SR Legacy (common whole foods with complete profiles) — or to Branded when brandOwner is set, since only Branded records carry one. Set dataType to ["Branded"] for packaged products, or include a UPC/GTIN code as the query. Pass brandOwner (e.g. "General Mills") to narrow branded results.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   input: z.object({
     query: z
@@ -51,11 +51,15 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       .int()
       .min(1)
       .default(1)
-      .describe('Page number (1-based). Use with totalPages to paginate.'),
+      .describe(
+        'Page number (1-based). Use with totalPages to paginate. Pages past the end return empty foods with a notice when the query has matches.',
+      ),
   }),
   output: z.object({
     totalHits: z.number().describe('Total number of foods matching the query across all pages.'),
-    currentPage: z.number().describe('Current page number (1-based).'),
+    currentPage: z
+      .number()
+      .describe('Current page number (1-based); the requested page for exhausted pages.'),
     totalPages: z.number().describe('Total number of pages available.'),
     foods: z
       .array(
@@ -94,7 +98,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
               .string()
               .optional()
               .describe(
-                'Unit for servingSize as FDC reports it: mass ("g", "GRM"), volume ("ml", "MLT"), or another unit ("IU", "MG"). Branded only.',
+                'Unit for servingSize as FDC reports it: mass ("g", "GRM", "GM", "MG"), volume ("ml", "MLT"), or another unit ("IU"). Branded only.',
               ),
             householdServingFullText: z
               .string()
@@ -114,7 +118,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
                   .describe('A preview nutrient entry with ID, name, and amount per 100g.'),
               )
               .describe(
-                'Preview nutrients per 100g — typically energy, protein, fat, carbs for SR Legacy. Not a complete profile; use usda_get_food for the full set.',
+                'Available preview nutrients per 100g: protein (1003), fat (1004), carbohydrate (1005), fiber (1079), and energy (1008, 1062, 2047, 2048). Source order, values and distinct energy estimates are preserved. Missing entries are omitted; use usda_get_food for other nutrients.',
               ),
             publishedDate: z
               .string()
@@ -127,6 +131,10 @@ export const usdaSearchFoods = tool('usda_search_foods', {
   }),
   enrichment: {
     totalCount: z.number().describe('Total foods matching the query across all pages.'),
+    notice: z
+      .string()
+      .optional()
+      .describe('Guidance for a requested page beyond the available range.'),
   },
 
   errors: [
@@ -195,7 +203,9 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       ctx,
     );
 
-    if (result.foods.length === 0) {
+    const exhaustedPage =
+      result.foods.length === 0 && result.totalHits > 0 && input.pageNumber > result.totalPages;
+    if (result.foods.length === 0 && !exhaustedPage) {
       const dtLabel = dataType.join(', ');
       const widen = dataType.includes('Branded')
         ? 'Try a simpler query or check spelling.'
@@ -208,9 +218,14 @@ export const usdaSearchFoods = tool('usda_search_foods', {
     }
 
     ctx.enrich.total(result.totalHits);
+    if (exhaustedPage) {
+      ctx.enrich.notice(
+        `Requested page ${input.pageNumber} is past the end. Valid pages are 1–${result.totalPages}; retry with pageNumber: ${result.totalPages}.`,
+      );
+    }
     return {
       totalHits: result.totalHits,
-      currentPage: result.currentPage,
+      currentPage: exhaustedPage ? input.pageNumber : result.currentPage,
       totalPages: result.totalPages,
       foods: result.foods,
     };

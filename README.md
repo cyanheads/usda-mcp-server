@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/usda-mcp-server</h1>
   <p><b>Search foods, compare nutrients, and look up the full USDA FoodData Central database via MCP. STDIO or Streamable HTTP.</b>
-  <div>5 Tools • 2 Resources</div>
+  <div>5 Tools • 3 Resources</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.13-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/usda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/usda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/usda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.13-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/usda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/usda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/usda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -47,8 +47,9 @@ Nutrition data for roughly 400,000 foods from USDA FoodData Central, the US gove
 |:---|:---|
 | `usda://food/{fdcId}` | Full nutrient profile for a specific food by FDC ID |
 | `usda://nutrients` | Complete FDC nutrient reference list |
+| `skill://usda-guide/SKILL.md` | Food selection, serving-weight, and missing-nutrient guidance for agents |
 
-All resource data is also reachable via tools. Use `usda_search_foods` to discover FDC IDs before reading food resources.
+Food profiles and the nutrient reference are also reachable via tools. Use `usda_search_foods` to discover FDC IDs before reading food resources.
 
 ## Capability reference
 
@@ -56,7 +57,8 @@ All resource data is also reachable via tools. Use `usda_search_foods` to discov
 
 - Query by keyword, ingredient name, or UPC/GTIN code; optional `dataType[]` filter across SR Legacy, Foundation, Survey (FNDDS), and Branded, defaulting to `["SR Legacy"]` (or `["Branded"]` once `brandOwner` is set)
 - `brandOwner` and `foodCategory` filters narrow results; `pageSize` (max 50, default 10) and `pageNumber` paginate
-- Returns FDC IDs plus a preview of key nutrients (energy, protein, fat, carbs) — not a complete profile
+- Returns FDC IDs plus available preview nutrients: protein (1003), fat (1004), carbohydrate (1005), fiber (1079), and energy (1008, 1062, 2047, 2048). Original values, units, order, and distinct energy estimates are preserved; missing entries are omitted. Use `usda_get_food` for other nutrients or the full profile
+- A page past `totalPages` returns empty `foods[]`, the requested page, totals, and a notice with a valid `pageNumber` when the query has matches
 - Typed errors: `query_empty` (blank query), `query_syntax` (FDC rejected the query syntax), `no_results` (nothing matched in the requested data sources)
 
 ---
@@ -64,9 +66,9 @@ All resource data is also reachable via tools. Use `usda_search_foods` to discov
 ### `usda_get_food` <sub>tool</sub>
 
 - Full nutrient profile for one `fdcId`; optional `nutrients[]` filter to specific IDs
-- Optional `unit` (`g` / `oz` / `lb` / `kg` / `serving`) with an optional `quantity` scales every value from the FDC per-100g basis; `quantity` defaults to 100 for mass units and 1 for `serving`, and `unit="serving"` multiplies the food's first defined portion weight by `quantity`
-- Returns `allPortions[]` alongside the scaled result
-- Typed errors: `not_found` (bad FDC ID), `quantity_without_unit`, `no_portion_data` (`serving` requested but the food has no portion data)
+- Optional `unit` (`g` / `oz` / `lb` / `kg` / `serving`) with an optional `quantity` scales every value from the FDC per-100g basis; `quantity` defaults to 100 for mass units and 1 for `serving`. Serving uses the first valid portion, or a positive finite Branded label size in `g` / `GRM` / `GM` (case-insensitive) when no portion exists, multiplied by `quantity`
+- `servingInfo` identifies the resolved portion or label serving and its gram weight; `allPortions[]` contains actual portion definitions only
+- Typed errors: `not_found` (bad FDC ID), `quantity_without_unit`, `no_portion_data` (no valid portion or supported Branded gram label). Volume, IU, milligram labels, missing units, and invalid sizes require an explicit mass-unit request; no density is inferred
 
 ---
 
@@ -109,6 +111,10 @@ All resource data is also reachable via tools. Use `usda_search_foods` to discov
 - Complete FDC nutrient reference — same content as `usda_list_nutrients` with no category filter
 - Served as `application/json` with a 1-hour public cache hint, since the table is bundled at build time and identical for every caller
 
+### `skill://usda-guide/SKILL.md` <sub>resource</sub>
+
+Guidance for matching food records, choosing a serving weight, and reporting incomplete nutrient coverage. The same [usda-guide](./skills/usda-guide/SKILL.md) ships with plugin installs, npm, Docker, and the desktop bundle.
+
 ## Features
 
 Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
@@ -129,140 +135,33 @@ Agent-friendly output:
 
 ## Getting started
 
-### Public Hosted Instance
-
-A public instance is available at `https://usda.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
-
-For Claude Code:
+Connect to the hosted instance, no install:
 
 ```sh
 claude mcp add --transport http usda-mcp-server https://usda.caseyjhand.com/mcp
 ```
 
-For Cline (`cline_mcp_settings.json`):
+Or run it locally:
 
-```json
-{
-  "mcpServers": {
-    "usda-mcp-server": {
-      "type": "streamableHttp",
-      "url": "https://usda.caseyjhand.com/mcp"
-    }
-  }
-}
+```sh
+claude mcp add usda-mcp-server -e USDA_FDC_API_KEY=your-key -- npx -y @cyanheads/usda-mcp-server
 ```
 
-For Cursor (`mcp.json`):
+For other clients, add this to the MCP config file:
 
 ```json
 {
   "mcpServers": {
     "usda-mcp-server": {
-      "url": "https://usda.caseyjhand.com/mcp"
-    }
-  }
-}
-```
-
-Claude Desktop adds remote servers under Settings → Connectors.
-
-### Self-Hosted / Local
-
-Add the following to your MCP client configuration file. See [data.gov API key signup](https://api.data.gov/signup/) to generate a free API key.
-
-```json
-{
-  "mcpServers": {
-    "usda-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/usda-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info",
-        "USDA_FDC_API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-Or with npx (no Bun required):
-
-```json
-{
-  "mcpServers": {
-    "usda-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/usda-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info",
-        "USDA_FDC_API_KEY": "your-api-key"
-      }
+      "args": ["-y", "@cyanheads/usda-mcp-server"],
+      "env": { "USDA_FDC_API_KEY": "your-api-key" }
     }
   }
 }
 ```
 
-Or with Docker:
-
-```json
-{
-  "mcpServers": {
-    "usda-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "MCP_TRANSPORT_TYPE=stdio",
-        "-e", "USDA_FDC_API_KEY=your-api-key",
-        "ghcr.io/cyanheads/usda-mcp-server:latest"
-      ]
-    }
-  }
-}
-```
-
-For Streamable HTTP, set the transport and start the server:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 USDA_FDC_API_KEY=your-api-key bun run start:http
-# Server listens at http://localhost:3010/mcp
-```
-
-### Prerequisites
-
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- A free USDA FDC API key — register at [api.data.gov/signup](https://api.data.gov/signup/). Required for food search, lookup, and comparison calls; `usda_list_nutrients` and the static nutrient reference work without it.
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/usda-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd usda-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
-
-4. **Configure environment:**
-
-```sh
-cp .env.example .env
-# edit .env and set USDA_FDC_API_KEY
-```
+Get a free key at [api.data.gov/signup](https://api.data.gov/signup/). Food search, lookup, and comparison require it; the static nutrient reference works without it. For Docker or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -281,7 +180,15 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ## Running the server
 
+Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+
 ### Local development
+
+```sh
+git clone https://github.com/cyanheads/usda-mcp-server.git
+cd usda-mcp-server && bun install
+cp .env.example .env   # set USDA_FDC_API_KEY
+```
 
 - **Build and run:**
 
@@ -306,11 +213,10 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 ### Docker
 
 ```sh
-docker build -t usda-mcp-server .
-docker run --rm -e USDA_FDC_API_KEY=your-key -p 3010:3010 usda-mcp-server
+docker run --rm -e USDA_FDC_API_KEY=your-key -p 3010:3010 ghcr.io/cyanheads/usda-mcp-server:latest
 ```
 
-The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/usda-mcp-server`. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
+The image defaults to HTTP transport, stateless session mode, and logs to `/var/log/usda-mcp-server`. For stdio, use `docker run -i --rm -e MCP_TRANSPORT_TYPE=stdio -e USDA_FDC_API_KEY=your-key ghcr.io/cyanheads/usda-mcp-server:latest`. To build locally, run `docker build -t usda-mcp-server .`; OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
 
 ## Project structure
 
@@ -321,6 +227,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — search, get, batch, compare, list-nutrients. |
 | `src/mcp-server/resources` | Resource definitions (`*.resource.ts`) — food profile and nutrient reference. |
 | `src/services/fdc` | `FdcService` — USDA FDC API client, normalization, and static nutrient reference data. |
+| `skills/` | Published guidance for agents calling the server. |
 | `tests/` | Unit tests mirroring `src/` — every tool, resource, and the FDC service. |
 
 ## Development guide

@@ -29,6 +29,8 @@ const BASE_URL = 'https://api.nal.usda.gov/fdc/v1';
 const TIMEOUT_MS = 15_000;
 /** Total budget for one FDC call across every attempt, backoff, and Retry-After. */
 const DEADLINE_MS = 45_000;
+/** Search preview only; distinct energy estimates retain their original identities. */
+const SEARCH_NUTRIENT_IDS = new Set([1003, 1004, 1005, 1079, 1008, 1062, 2047, 2048]);
 
 // ---- Normalization helpers ----
 
@@ -85,7 +87,7 @@ function normalizeFoodCategory(
 function normalizeSearchFood(raw: RawSearchFood): SearchResultFood {
   const nutrients = (raw.foodNutrients ?? [])
     .map(normalizeNutrientFromSearch)
-    .filter((n): n is NonNullable<typeof n> => n !== null);
+    .filter((n): n is NonNullable<typeof n> => n !== null && SEARCH_NUTRIENT_IDS.has(n.id));
 
   return {
     fdcId: raw.fdcId,
@@ -136,6 +138,9 @@ function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): Foo
     ...(raw.brandOwner && { brandOwner: raw.brandOwner }),
     ...(raw.brandName && { brandName: raw.brandName }),
     ...(raw.ingredients && { ingredients: raw.ingredients }),
+    ...(raw.servingSize != null && { servingSize: raw.servingSize }),
+    ...(raw.servingSizeUnit && { servingSizeUnit: raw.servingSizeUnit }),
+    ...(raw.householdServingFullText && { householdServingFullText: raw.householdServingFullText }),
   };
 }
 

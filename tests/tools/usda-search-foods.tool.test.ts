@@ -3,7 +3,7 @@
  * @module tests/tools/usda-search-foods.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaSearchFoods } from '@/mcp-server/tools/definitions/usda-search-foods.tool.js';
 import { firstText } from '../helpers.js';
@@ -221,21 +221,24 @@ describe('usdaSearchFoods', () => {
       );
     });
 
-    it('throws no_results for a page past the end rather than an empty success', async () => {
+    it('returns empty success and a notice for a page past the end', async () => {
       const service = await getServiceMock();
       // FDC answers a past-the-end page with 200 and an empty foods[], keeping
-      // the real totalHits — so emptiness, not the count, is the signal.
+      // the real totalHits but resetting currentPage to 1.
       service.searchFoods.mockResolvedValue({
         totalHits: 12,
-        currentPage: 99,
+        currentPage: 1,
         totalPages: 2,
         foods: [],
       });
       const ctx = createMockContext({ errors: usdaSearchFoods.errors });
       const input = usdaSearchFoods.input.parse({ query: 'kale', pageNumber: 99 });
 
-      await expect(usdaSearchFoods.handler(input, ctx)).rejects.toMatchObject({
-        data: { reason: 'no_results' },
+      const result = await usdaSearchFoods.handler(input, ctx);
+      expect(result).toEqual({ totalHits: 12, currentPage: 99, totalPages: 2, foods: [] });
+      expect(getEnrichment(ctx)).toMatchObject({
+        totalCount: 12,
+        notice: expect.stringContaining('pageNumber: 2'),
       });
     });
   });

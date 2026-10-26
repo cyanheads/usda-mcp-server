@@ -95,8 +95,11 @@ export interface RawFoodDetail {
   foodCategory?: string | { description?: string };
   foodNutrients?: RawFoodNutrient[];
   foodPortions?: RawFoodPortion[];
+  householdServingFullText?: string;
   ingredients?: string;
   publicationDate?: string;
+  servingSize?: number;
+  servingSizeUnit?: string;
 }
 
 // ---- Normalized domain types ----
@@ -125,10 +128,13 @@ export interface FoodDetail {
   description: string;
   fdcId: number;
   foodCategory?: string;
+  householdServingFullText?: string;
   ingredients?: string;
   nutrients: FoodNutrient[];
   portions: FoodPortion[];
   publicationDate?: string;
+  servingSize?: number;
+  servingSizeUnit?: string;
 }
 
 /** Normalized search result food. */
