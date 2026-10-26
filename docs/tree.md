@@ -1,6 +1,6 @@
 # usda-mcp-server - Directory Structure
 
-Generated on: 2026-10-09 07:34:11
+Generated on: 2026-10-26 06:57:29
 
 ```text
 usda-mcp-server/
@@ -25,6 +25,7 @@ usda-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -37,6 +38,8 @@ usda-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -134,6 +137,9 @@ usda-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── usda-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -161,6 +167,8 @@ usda-mcp-server/
 │   ├── resources/
 │   │   ├── usda-food.resource.test.ts
 │   │   └── usda-nutrients.resource.test.ts
+│   ├── scripts/
+│   │   └── mcpb-skills.test.ts
 │   ├── services/
 │   │   └── fdc/
 │   │       ├── fdc-service.test.ts
@@ -172,7 +180,8 @@ usda-mcp-server/
 │   │   ├── usda-get-food.tool.test.ts
 │   │   ├── usda-get-foods.tool.test.ts
 │   │   ├── usda-list-nutrients.tool.test.ts
-│   │   └── usda-search-foods.tool.test.ts
+│   │   ├── usda-search-foods.tool.test.ts
+│   │   └── usda-search-serving.integration.test.ts
 │   ├── fdc-fake.ts
 │   └── helpers.ts
 ├── .dockerignore
@@ -191,7 +200,9 @@ usda-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
