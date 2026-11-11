@@ -12,6 +12,7 @@ import {
 } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
+import { basisUnitFor } from './basis.js';
 import type {
   FdcDataType,
   FoodDetail,
@@ -31,6 +32,12 @@ const TIMEOUT_MS = 15_000;
 const DEADLINE_MS = 45_000;
 /** Search preview only; distinct energy estimates retain their original identities. */
 const SEARCH_NUTRIENT_IDS = new Set([1003, 1004, 1005, 1079, 1008, 1062, 2047, 2048]);
+
+/**
+ * The deepest result `/foods/search` serves: FDC answers HTTP 400 to any page
+ * whose `pageSize × pageNumber` exceeds it, however many foods match.
+ */
+export const FDC_RESULT_WINDOW = 100_000;
 
 // ---- Normalization helpers ----
 
@@ -66,22 +73,57 @@ function normalizeNutrientFromDetail(raw: RawFoodNutrient): FoodNutrient | null 
   };
 }
 
-function normalizePortion(raw: RawFoodPortion): FoodPortion | null {
-  if (raw.gramWeight == null || raw.gramWeight <= 0) return null;
-  const parts: string[] = [];
-  if (raw.portionDescription?.trim()) parts.push(raw.portionDescription.trim());
-  if (raw.modifier?.trim()) parts.push(raw.modifier.trim());
-  if (raw.measureUnit?.name?.trim()) parts.push(raw.measureUnit.name.trim());
-  const description = parts.join(' ') || 'Serving';
-  return { description, gramWeight: raw.gramWeight };
+/**
+ * How a measure-unit name reads in a portion description, where that differs
+ * from the name: FDC's placeholder (`undetermined`, id 9999) reads as nothing
+ * and `RACC` is spelled out.
+ */
+const MEASURE_UNIT_TEXT = new Map([
+  ['undetermined', ''],
+  ['RACC', 'RACC (reference amount customarily consumed)'],
+]);
+
+/**
+ * One description rule for every data type: FNDDS's `portionDescription` as
+ * sent, since it already carries the amount; otherwise the amount, the measure
+ * unit (FDC's placeholder dropped), and the modifier (FNDDS's all-digit food
+ * codes dropped), space-joined; `Serving` when nothing remains.
+ */
+function describePortion(raw: RawFoodPortion, amount: number | undefined): string {
+  const described = raw.portionDescription?.trim();
+  if (described) return described;
+  const unit = raw.measureUnit?.name?.trim() ?? '';
+  const modifier = raw.modifier?.trim() ?? '';
+  const parts = [
+    amount === undefined ? '' : String(amount),
+    MEASURE_UNIT_TEXT.get(unit) ?? unit,
+    /^\d+$/.test(modifier) ? '' : modifier,
+  ];
+  return parts.filter(Boolean).join(' ') || 'Serving';
 }
 
-function normalizeFoodCategory(
-  raw: string | { description?: string } | undefined,
-): string | undefined {
-  if (!raw) return;
-  if (typeof raw === 'string') return raw.trim() || undefined;
-  return raw.description?.trim() || undefined;
+function normalizePortion(raw: RawFoodPortion): FoodPortion | null {
+  if (raw.gramWeight == null || raw.gramWeight <= 0) return null;
+  const amount =
+    raw.amount != null && Number.isFinite(raw.amount) && raw.amount > 0 ? raw.amount : undefined;
+  return {
+    description: describePortion(raw, amount),
+    gramWeight: raw.gramWeight,
+    ...(amount !== undefined && { amount }),
+  };
+}
+
+/**
+ * FDC files a record's category under a different field per data type: SR
+ * Legacy and Foundation send `foodCategory`, Branded `brandedFoodCategory`,
+ * and Survey (FNDDS) `wweiaFoodCategory`. The first non-blank one, trimmed.
+ */
+function normalizeFoodCategory(raw: RawFoodDetail): string | undefined {
+  const category =
+    typeof raw.foodCategory === 'string' ? raw.foodCategory : raw.foodCategory?.description;
+  return [category, raw.brandedFoodCategory, raw.wweiaFoodCategory?.wweiaFoodCategoryDescription]
+    .map((value) => value?.trim())
+    .find((value) => !!value);
 }
 
 function normalizeSearchFood(raw: RawSearchFood): SearchResultFood {
@@ -89,14 +131,18 @@ function normalizeSearchFood(raw: RawSearchFood): SearchResultFood {
     .map(normalizeNutrientFromSearch)
     .filter((n): n is NonNullable<typeof n> => n !== null && SEARCH_NUTRIENT_IDS.has(n.id));
 
+  const dataType = raw.dataType ?? 'Unknown';
+  const basisUnit = basisUnitFor(dataType, raw.servingSizeUnit);
   return {
     fdcId: raw.fdcId,
     description: raw.description,
-    dataType: raw.dataType ?? 'Unknown',
+    dataType,
+    ...(basisUnit && { basisUnit }),
     nutrients,
     ...(raw.foodCategory && { foodCategory: raw.foodCategory }),
     ...(raw.brandOwner && { brandOwner: raw.brandOwner }),
     ...(raw.brandName && { brandName: raw.brandName }),
+    ...(raw.gtinUpc && { gtinUpc: raw.gtinUpc }),
     ...(raw.servingSize != null && { servingSize: raw.servingSize }),
     ...(raw.servingSizeUnit && { servingSizeUnit: raw.servingSizeUnit }),
     ...(raw.householdServingFullText && { householdServingFullText: raw.householdServingFullText }),
@@ -105,7 +151,9 @@ function normalizeSearchFood(raw: RawSearchFood): SearchResultFood {
 }
 
 /**
- * Applies the caller's nutrient filter locally, by FDC nutrient id.
+ * Applies the caller's nutrient filter locally, by FDC nutrient id, and names
+ * the requested ids the food's profile does not report — deduplicated, in
+ * request order — as `missingNutrients`.
  *
  * The filter is never forwarded to FDC: its `nutrients` parameter matches SR
  * *numbers* (`"208"`), while every id this server hands out and accepts is an
@@ -117,26 +165,31 @@ function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): Foo
     .map(normalizeNutrientFromDetail)
     .filter((n): n is FoodNutrient => n !== null);
 
-  const nutrients =
-    nutrientFilter && nutrientFilter.length > 0
-      ? allNutrients.filter((n) => nutrientFilter.includes(n.id))
-      : allNutrients;
+  const requested = nutrientFilter?.length ? new Set(nutrientFilter) : undefined;
+  const nutrients = requested ? allNutrients.filter((n) => requested.has(n.id)) : allNutrients;
+  const reported = new Set(nutrients.map((n) => n.id));
+  const missingNutrients = requested ? [...requested].filter((id) => !reported.has(id)) : [];
 
   const portions = (raw.foodPortions ?? [])
     .map(normalizePortion)
     .filter((p): p is FoodPortion => p !== null);
 
-  const category = normalizeFoodCategory(raw.foodCategory);
+  const dataType = raw.dataType ?? 'Unknown';
+  const basisUnit = basisUnitFor(dataType, raw.servingSizeUnit);
+  const category = normalizeFoodCategory(raw);
   return {
     fdcId: raw.fdcId,
     description: raw.description,
-    dataType: raw.dataType ?? 'Unknown',
+    dataType,
+    ...(basisUnit && { basisUnit }),
     nutrients,
+    ...(missingNutrients.length > 0 && { missingNutrients }),
     portions,
     ...(category && { foodCategory: category }),
     ...(raw.publicationDate && { publicationDate: raw.publicationDate }),
     ...(raw.brandOwner && { brandOwner: raw.brandOwner }),
     ...(raw.brandName && { brandName: raw.brandName }),
+    ...(raw.gtinUpc && { gtinUpc: raw.gtinUpc }),
     ...(raw.ingredients && { ingredients: raw.ingredients }),
     ...(raw.servingSize != null && { servingSize: raw.servingSize }),
     ...(raw.servingSizeUnit && { servingSizeUnit: raw.servingSizeUnit }),
@@ -297,6 +350,24 @@ export function escapeFdcQuery(query: string): string {
   return out + query.slice(copiedTo);
 }
 
+/**
+ * Encodes a `brandOwner` or `foodCategory` filter for `/foods/search`. FDC
+ * parses each as a Lucene query that ORs its words, so the value goes as one
+ * quoted phrase, `\` and `"` escaped in a single pass, and matches records
+ * holding it contiguously (FDC ignores case and punctuation within it). A
+ * value holding `*` or `?` is a wildcard pattern, which a phrase cannot carry,
+ * so it is sent as written.
+ */
+export function encodeFdcFilter(value: string): string {
+  if (isWildcardFilter(value)) return value;
+  return `"${value.replace(/[\\"]/g, '\\$&')}"`;
+}
+
+/** Whether a `brandOwner` or `foodCategory` value is a wildcard pattern (holds `*` or `?`), sent to FDC as written. */
+export function isWildcardFilter(value: string): boolean {
+  return value.includes('*') || value.includes('?');
+}
+
 // ---- Request helper ----
 
 /**
@@ -391,11 +462,29 @@ async function fetchFdc<T>(
   }
 }
 
+/**
+ * The `/foods` batch body as a list. FDC answers HTTP 200 `{}` rather than
+ * `[]` when it knows none of the requested IDs, so an empty object reads as
+ * zero matches.
+ *
+ * @throws `ServiceUnavailable` for any other non-array body.
+ */
+function batchFoodList(body: unknown): RawFoodDetail[] {
+  if (Array.isArray(body)) return body as RawFoodDetail[];
+  if (typeof body === 'object' && body !== null && Object.keys(body).length === 0) return [];
+  throw serviceUnavailable(
+    'USDA FDC /foods returned an unexpected response body instead of a list of foods.',
+  );
+}
+
 // ---- Service class ----
 
 export class FdcService {
   /**
-   * Search foods by keyword.
+   * Search foods by keyword. `brandOwner` and `foodCategory` are trimmed and
+   * sent through {@link encodeFdcFilter}; blank ones stay off the wire.
+   * `requireAllWords: true` sends FDC's native flag of the same name, so only
+   * foods matching every query word count; otherwise the field is not sent.
    */
   async searchFoods(
     params: {
@@ -405,6 +494,7 @@ export class FdcService {
       foodCategory?: string;
       pageSize?: number;
       pageNumber?: number;
+      requireAllWords?: boolean;
     },
     ctx: Context,
   ): Promise<{
@@ -426,8 +516,11 @@ export class FdcService {
       pageNumber: params.pageNumber ?? 1,
     };
     if (params.dataType?.length) body.dataType = params.dataType;
-    if (params.brandOwner?.trim()) body.brandOwner = params.brandOwner.trim();
-    if (params.foodCategory?.trim()) body.foodCategory = params.foodCategory.trim();
+    const brandOwner = params.brandOwner?.trim();
+    if (brandOwner) body.brandOwner = encodeFdcFilter(brandOwner);
+    const foodCategory = params.foodCategory?.trim();
+    if (foodCategory) body.foodCategory = encodeFdcFilter(foodCategory);
+    if (params.requireAllWords) body.requireAllWords = true;
 
     let raw: RawSearchResponse;
     try {
@@ -498,12 +591,16 @@ export class FdcService {
   }> {
     ctx.log.debug('Fetching FDC batch foods', { count: fdcIds.length });
 
-    // format:"abridged" returns empty foodNutrients[] — do not use
-    const rawList = await fetchFdc<RawFoodDetail[]>('/foods', {
+    /**
+     * The full format, because `format: "abridged"` keys nutrients by SR
+     * number with no nutrient id and omits portions.
+     */
+    const body = await fetchFdc<unknown>('/foods', {
       method: 'POST',
       body: { fdcIds },
       ctx,
     });
+    const rawList = batchFoodList(body);
 
     const returnedMap = new Map<number, RawFoodDetail>();
     for (const item of rawList) {

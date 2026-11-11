@@ -18,8 +18,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaCompareFoods } from '@/mcp-server/tools/definitions/usda-compare-foods.tool.js';
 import { usdaGetFood } from '@/mcp-server/tools/definitions/usda-get-food.tool.js';
 import { usdaSearchFoods } from '@/mcp-server/tools/definitions/usda-search-foods.tool.js';
-import { escapeFdcQuery, FdcService, initFdcService } from '@/services/fdc/fdc-service.js';
-import { createFdcFake, FIXTURE_NUTRIENT_COUNT, RAW_KALE } from '../../fdc-fake.js';
+import {
+  encodeFdcFilter,
+  escapeFdcQuery,
+  FDC_RESULT_WINDOW,
+  FdcService,
+  initFdcService,
+} from '@/services/fdc/fdc-service.js';
+import type {
+  FoodDetail,
+  FoodPortion,
+  RawFoodDetail,
+  RawFoodPortion,
+  RawSearchFood,
+  SearchResultFood,
+} from '@/services/fdc/types.js';
+import {
+  createFdcFake,
+  FIXTURE_NUTRIENT_COUNT,
+  RAW_CUSTARD,
+  RAW_KALE,
+  RAW_MILK,
+  RAW_NOODLES,
+  RAW_OLIVE_OIL,
+  RAW_ORANGE,
+  RAW_TACO,
+} from '../../fdc-fake.js';
 import { firstText } from '../../helpers.js';
 
 const KALE = 168421;
@@ -42,9 +66,53 @@ function requestParams(index: number): URLSearchParams {
 
 /** JSON body the service put on the wire for call `index`. */
 async function requestBody(index: number): Promise<Record<string, unknown>> {
+  return JSON.parse(await requestText(index)) as Record<string, unknown>;
+}
+
+/** Raw body bytes the service put on the wire for call `index`. */
+async function requestText(index: number): Promise<string> {
   const call = http.calls[index];
   if (!call) throw new Error(`No upstream call at index ${index}`);
-  return (await call.request.json()) as Record<string, unknown>;
+  return call.request.clone().text();
+}
+
+/**
+ * Normalizes `raw` through the real `getFoodDetail` by serving it from
+ * `/food/{fdcId}` over the FDC fake for this one call — for upstream shapes
+ * the fake's catalog does not hold.
+ */
+async function detailOf(raw: RawFoodDetail, nutrientFilter?: number[]): Promise<FoodDetail> {
+  const harness = createFetchMock([
+    {
+      method: 'GET',
+      match: (request) => new URL(request.url).pathname === `/fdc/v1/food/${raw.fdcId}`,
+      respond: () => Response.json(raw),
+    },
+  ]);
+  harness.install();
+  try {
+    return await service.getFoodDetail(raw.fdcId, nutrientFilter, createMockContext());
+  } finally {
+    harness.restore();
+  }
+}
+
+/** Normalizes one `/foods/search` row through the real `searchFoods`, served for this one call. */
+async function searchRowOf(raw: RawSearchFood): Promise<SearchResultFood | undefined> {
+  const harness = createFetchMock([
+    {
+      method: 'POST',
+      match: (request) => new URL(request.url).pathname === '/fdc/v1/foods/search',
+      respond: () => Response.json({ totalHits: 1, currentPage: 1, totalPages: 1, foods: [raw] }),
+    },
+  ]);
+  harness.install();
+  try {
+    const { foods } = await service.searchFoods({ query: 'any' }, createMockContext());
+    return foods[0];
+  } finally {
+    harness.restore();
+  }
 }
 
 describe('FdcService', () => {
@@ -117,8 +185,8 @@ describe('FdcService', () => {
 
       expect(food.foodCategory).toBe('Vegetables and Vegetable Products');
       expect(food.portions).toEqual([
-        { description: 'bunch undetermined', gramWeight: 340 },
-        { description: 'leaf undetermined', gramWeight: 10 },
+        { description: '1 bunch', gramWeight: 340, amount: 1 },
+        { description: '1 leaf', gramWeight: 10, amount: 1 },
       ]);
       const iron = food.nutrients.find((n) => n.id === IRON);
       expect(iron).toEqual({
@@ -128,6 +196,29 @@ describe('FdcService', () => {
         amount: 2.71,
         unit: 'mg',
       });
+    });
+
+    it('reads a string foodCategory, trimmed', async () => {
+      const food = await detailOf({ ...RAW_KALE, foodCategory: '  Snacks  ' });
+
+      expect(food.foodCategory).toBe('Snacks');
+    });
+
+    it('drops portions without a positive gram weight and keeps FDC order', async () => {
+      const food = await detailOf({
+        ...RAW_KALE,
+        foodPortions: [
+          { gramWeight: 0, modifier: 'cup' },
+          { gramWeight: 12 },
+          { gramWeight: -3, modifier: 'slice' },
+          { gramWeight: 5, portionDescription: '1 piece' },
+        ],
+      });
+
+      expect(food.portions).toEqual([
+        { description: 'Serving', gramWeight: 12 },
+        { description: '1 piece', gramWeight: 5 },
+      ]);
     });
   });
 
@@ -173,6 +264,343 @@ describe('FdcService', () => {
       for (const food of foods) {
         expect(food.nutrients.map((n) => n.id)).toEqual([PROTEIN]);
       }
+    });
+
+    /**
+     * FDC answers HTTP 200 `{}` instead of `[]` when it knows none of the
+     * requested IDs — for one unknown ID, several, or none at all.
+     */
+    it('reads a 200 {} as zero matches and fails every requested ID', async () => {
+      const { foods, failed } = await service.getFoodsBatch(
+        [999_999_998, 999_999_999],
+        [PROTEIN],
+        createMockContext(),
+      );
+
+      expect(foods).toEqual([]);
+      expect(failed).toStrictEqual([
+        { fdcId: 999_999_998, error: 'FDC ID 999999998 not found or returned no data.' },
+        { fdcId: 999_999_999, error: 'FDC ID 999999999 not found or returned no data.' },
+      ]);
+    });
+
+    it.each([
+      ['an object with keys', { foods: [] }],
+      ['null', null],
+      ['a string', 'ok'],
+      ['a number', 0],
+    ])(
+      'fails a 200 body that is %s as ServiceUnavailable without retrying',
+      async (_label, body) => {
+        const upstream = createFetchMock([
+          {
+            method: 'POST',
+            match: (request) => new URL(request.url).pathname === '/fdc/v1/foods',
+            respond: () => Response.json(body),
+          },
+        ]);
+        upstream.install();
+        try {
+          await expect(
+            service.getFoodsBatch([KALE, SPINACH], undefined, createMockContext()),
+          ).rejects.toMatchObject({ code: JsonRpcErrorCode.ServiceUnavailable });
+          expect(upstream.calls).toHaveLength(1);
+        } finally {
+          upstream.restore();
+        }
+      },
+    );
+  });
+
+  /**
+   * One description rule for every data type: FNDDS's `portionDescription` as
+   * sent; otherwise the positive `amount`, the measure unit unless FDC's
+   * `undetermined` placeholder (RACC spelled out), and the modifier unless an
+   * all-digit FNDDS code; `Serving` when nothing remains.
+   */
+  describe('portion descriptions', () => {
+    it.each<[string, RawFoodDetail, FoodPortion[]]>([
+      [
+        'an SR Legacy half cup',
+        RAW_CUSTARD,
+        [{ description: '0.5 cup', gramWeight: 141, amount: 0.5 }],
+      ],
+      [
+        'SR Legacy portions in FDC order',
+        RAW_NOODLES,
+        [
+          { description: '2 oz', gramWeight: 57, amount: 2 },
+          { description: '1 cup', gramWeight: 38, amount: 1 },
+        ],
+      ],
+      [
+        'Foundation measure units and a RACC',
+        RAW_ORANGE,
+        [
+          { description: '1 cup sections no membranes', gramWeight: 165, amount: 1 },
+          { description: '1 each 2-7/8" dia', gramWeight: 140, amount: 1 },
+          {
+            description: '1 RACC (reference amount customarily consumed)',
+            gramWeight: 140,
+            amount: 1,
+          },
+        ],
+      ],
+      [
+        'FNDDS described portions, which carry no amount',
+        RAW_TACO,
+        [
+          { description: '1 small/regular', gramWeight: 105 },
+          { description: '1 large', gramWeight: 160 },
+          { description: 'Quantity not specified', gramWeight: 105 },
+        ],
+      ],
+    ])('describes %s', async (_label, raw, expected) => {
+      const food = await service.getFoodDetail(raw.fdcId, undefined, createMockContext());
+
+      expect(food.portions).toStrictEqual(expected);
+    });
+
+    const UNDETERMINED = { id: 9999, name: 'undetermined', abbreviation: 'undetermined' };
+
+    it.each<[string, RawFoodPortion, FoodPortion]>([
+      [
+        'a zero amount, neither rendered nor carried',
+        { amount: 0, gramWeight: 30, modifier: 'cup', measureUnit: UNDETERMINED },
+        { description: 'cup', gramWeight: 30 },
+      ],
+      [
+        'a negative amount',
+        { amount: -1, gramWeight: 30, modifier: 'cup', measureUnit: UNDETERMINED },
+        { description: 'cup', gramWeight: 30 },
+      ],
+      [
+        'an all-digit modifier dropped beside an amount',
+        { amount: 2, gramWeight: 50, modifier: '10205', measureUnit: UNDETERMINED },
+        { description: '2', gramWeight: 50, amount: 2 },
+      ],
+      [
+        'a modifier mixing digits and text, kept and trimmed',
+        { amount: 1, gramWeight: 28, modifier: '  slice (1 oz) ', measureUnit: UNDETERMINED },
+        { description: '1 slice (1 oz)', gramWeight: 28, amount: 1 },
+      ],
+      [
+        'a blank portionDescription, falling through to the parts',
+        { portionDescription: '   ', amount: 3, gramWeight: 45, modifier: 'pieces' },
+        { description: '3 pieces', gramWeight: 45, amount: 3 },
+      ],
+      [
+        'a portionDescription beside an amount, the description as sent',
+        { portionDescription: ' 1 cup, diced ', amount: 1, gramWeight: 150, modifier: '12345' },
+        { description: '1 cup, diced', gramWeight: 150, amount: 1 },
+      ],
+      [
+        'a RACC without an amount',
+        { gramWeight: 30, measureUnit: { id: 1121, name: 'RACC', abbreviation: 'RACC' } },
+        { description: 'RACC (reference amount customarily consumed)', gramWeight: 30 },
+      ],
+      [
+        'only placeholders',
+        { gramWeight: 10, modifier: '90000', measureUnit: UNDETERMINED },
+        { description: 'Serving', gramWeight: 10 },
+      ],
+    ])('handles %s', async (_label, portion, expected) => {
+      const food = await detailOf({ ...RAW_KALE, foodPortions: [portion] });
+
+      expect(food.portions).toStrictEqual([expected]);
+    });
+  });
+
+  /** Branded values are per 100 g or per 100 ml by label unit; every other data type is per 100 g. */
+  describe('basis unit', () => {
+    it.each([
+      ['SR Legacy detail per 100 g', RAW_KALE, 'g'],
+      ['Survey (FNDDS) detail per 100 g', RAW_TACO, 'g'],
+      ['a Branded ml label per 100 ml', RAW_MILK, 'ml'],
+    ] as const)('marks %s', async (_label, raw, expected) => {
+      const food = await service.getFoodDetail(raw.fdcId, undefined, createMockContext());
+
+      expect(food.basisUnit).toBe(expected);
+    });
+
+    it('marks a Branded gram label g and omits the basis for an unverified label unit', async () => {
+      await expect(detailOf({ ...RAW_MILK, servingSizeUnit: 'GRM' })).resolves.toMatchObject({
+        basisUnit: 'g',
+      });
+      await expect(detailOf({ ...RAW_MILK, servingSizeUnit: 'IU' })).resolves.not.toHaveProperty(
+        'basisUnit',
+      );
+      const { servingSizeUnit: _unit, ...noUnit } = RAW_MILK;
+      await expect(detailOf(noUnit)).resolves.not.toHaveProperty('basisUnit');
+    });
+
+    it('carries the basis through the batch path', async () => {
+      const { foods } = await service.getFoodsBatch(
+        [RAW_OLIVE_OIL.fdcId, KALE],
+        undefined,
+        createMockContext(),
+      );
+
+      expect(foods.map((f) => f.basisUnit)).toEqual(['ml', 'g']);
+    });
+
+    it.each<[string, Partial<RawSearchFood>, string | undefined]>([
+      ['an SR Legacy row per 100 g', { dataType: 'SR Legacy' }, 'g'],
+      [
+        'a Branded MLT row per 100 ml',
+        { dataType: 'Branded', servingSize: 240, servingSizeUnit: 'MLT' },
+        'ml',
+      ],
+      [
+        'a Branded IU row with no basis',
+        { dataType: 'Branded', servingSize: 57, servingSizeUnit: 'IU' },
+        undefined,
+      ],
+    ])('marks %s', async (_label, fields, expected) => {
+      const row = await searchRowOf({ fdcId: 1, description: 'Row', ...fields });
+
+      expect(row?.basisUnit).toBe(expected);
+      expect(Object.hasOwn(row ?? {}, 'basisUnit')).toBe(expected !== undefined);
+    });
+  });
+
+  describe('gtinUpc', () => {
+    it('carries a Branded GTIN as the string FDC sends, leading zeros kept', async () => {
+      const milk = await service.getFoodDetail(RAW_MILK.fdcId, undefined, createMockContext());
+      const { foods } = await service.getFoodsBatch(
+        [RAW_OLIVE_OIL.fdcId, KALE],
+        undefined,
+        createMockContext(),
+      );
+
+      expect(milk.gtinUpc).toBe('02114029705');
+      expect(foods[0]?.gtinUpc).toBe('011110044174');
+      expect(foods[1]).not.toHaveProperty('gtinUpc');
+    });
+
+    it('carries a search row GTIN and omits one FDC does not send', async () => {
+      await expect(
+        searchRowOf({
+          fdcId: 2078244,
+          description: 'MILK',
+          dataType: 'Branded',
+          gtinUpc: '02114029705',
+        }),
+      ).resolves.toMatchObject({ gtinUpc: '02114029705' });
+      await expect(
+        searchRowOf({ fdcId: 171077, description: 'Chicken', dataType: 'SR Legacy' }),
+      ).resolves.not.toHaveProperty('gtinUpc');
+    });
+  });
+
+  /** FDC sends the category under a different field per data type. */
+  describe('food category', () => {
+    it.each([
+      ['Branded brandedFoodCategory', RAW_MILK, 'Milk'],
+      ['Branded brandedFoodCategory', RAW_OLIVE_OIL, 'Vegetable & Cooking Oils'],
+      ['FNDDS wweiaFoodCategory', RAW_TACO, 'Burritos and tacos'],
+      ['SR Legacy foodCategory', RAW_CUSTARD, 'Sweets'],
+    ])('reads the %s %#', async (_field, raw, expected) => {
+      const food = await service.getFoodDetail(raw.fdcId, undefined, createMockContext());
+
+      expect(food.foodCategory).toBe(expected);
+    });
+
+    it('takes the first present field, skipping blanks, trimmed', async () => {
+      await expect(
+        detailOf({ ...RAW_MILK, foodCategory: { description: 'Dairy and Egg Products' } }),
+      ).resolves.toMatchObject({ foodCategory: 'Dairy and Egg Products' });
+      await expect(
+        detailOf({ ...RAW_MILK, foodCategory: '  ', brandedFoodCategory: ' Milk ' }),
+      ).resolves.toMatchObject({ foodCategory: 'Milk' });
+      await expect(
+        detailOf({
+          ...RAW_TACO,
+          foodCategory: { description: ' ' },
+          wweiaFoodCategory: { wweiaFoodCategoryDescription: ' Burritos and tacos ' },
+        }),
+      ).resolves.toMatchObject({ foodCategory: 'Burritos and tacos' });
+    });
+
+    it('omits the category when every field is absent or blank', async () => {
+      await expect(
+        detailOf({
+          ...RAW_TACO,
+          brandedFoodCategory: ' ',
+          wweiaFoodCategory: { wweiaFoodCategoryDescription: '  ' },
+        }),
+      ).resolves.not.toHaveProperty('foodCategory');
+      const { wweiaFoodCategory: _category, ...bare } = RAW_TACO;
+      await expect(detailOf(bare)).resolves.not.toHaveProperty('foodCategory');
+    });
+
+    it('carries the category through the batch path', async () => {
+      const { foods } = await service.getFoodsBatch(
+        [RAW_TACO.fdcId, RAW_MILK.fdcId],
+        undefined,
+        createMockContext(),
+      );
+
+      expect(foods.map((f) => f.foodCategory)).toEqual(['Burritos and tacos', 'Milk']);
+    });
+  });
+
+  /** Requested nutrient IDs a food's returned profile does not report. */
+  describe('missingNutrients', () => {
+    it('lists requested IDs the profile lacks, deduplicated, in request order', async () => {
+      const food = await service.getFoodDetail(
+        KALE,
+        [SUGARS, PROTEIN, 99_999, SUGARS, 99_999],
+        createMockContext(),
+      );
+
+      expect(food.nutrients.map((n) => n.id)).toEqual([PROTEIN]);
+      expect(food.missingNutrients).toEqual([SUGARS, 99_999]);
+    });
+
+    it('names the only requested ID when the food lacks it', async () => {
+      const food = await service.getFoodDetail(KALE, [SUGARS], createMockContext());
+
+      expect(food.nutrients).toEqual([]);
+      expect(food.missingNutrients).toEqual([SUGARS]);
+    });
+
+    it.each([
+      ['every requested ID is present', [ENERGY, PROTEIN]],
+      ['no filter is given', undefined],
+      ['the filter is empty', []],
+    ])('is omitted when %s', async (_label, filter) => {
+      const food = await service.getFoodDetail(KALE, filter, createMockContext());
+
+      expect(food).not.toHaveProperty('missingNutrients');
+    });
+
+    it('counts an entry FDC sends without an amount as unreported', async () => {
+      const food = await detailOf(
+        {
+          ...RAW_KALE,
+          foodNutrients: [
+            { nutrient: { id: PROTEIN, number: '203', name: 'Protein', unitName: 'g' } },
+          ],
+        },
+        [PROTEIN],
+      );
+
+      expect(food.nutrients).toEqual([]);
+      expect(food.missingNutrients).toEqual([PROTEIN]);
+    });
+
+    it('rides each batch food, never a failed entry', async () => {
+      const { foods, failed } = await service.getFoodsBatch(
+        [KALE, 999_999, SPINACH],
+        [PROTEIN, SUGARS],
+        createMockContext(),
+      );
+
+      expect(foods.map((f) => f.missingNutrients)).toEqual([[SUGARS], [SUGARS]]);
+      expect(failed).toStrictEqual([
+        { fdcId: 999_999, error: 'FDC ID 999999 not found or returned no data.' },
+      ]);
     });
   });
 
@@ -280,6 +708,98 @@ describe('FdcService', () => {
       await expect(wireQuery(query)).resolves.toBe(query);
     });
 
+    describe('request body beyond query', () => {
+      it('sends a body with no filter or option byte for byte as 0.2.0 did', async () => {
+        routeSearch(emptyPage);
+        await service.searchFoods({ query: 'kale', dataType: ['SR Legacy'] }, createMockContext());
+
+        await expect(requestText(0)).resolves.toBe(
+          '{"query":"kale","pageSize":10,"pageNumber":1,"dataType":["SR Legacy"]}',
+        );
+      });
+
+      it.each([
+        ['brandOwner', 'Kellog*', 'Kellog*'],
+        ['brandOwner', '  Kellog*  ', 'Kellog*'],
+        ['foodCategory', 'Poult?y Products', 'Poult?y Products'],
+        // A wildcard value is sent as written, escapes and quotes included.
+        ['brandOwner', 'Ben*Jerry"s \\', 'Ben*Jerry"s \\'],
+      ] as const)('sends wildcard %s %j unquoted as %j', async (field, value, expected) => {
+        routeSearch(emptyPage);
+        await service.searchFoods({ query: 'cereal', [field]: value }, createMockContext());
+
+        expect((await requestBody(0))[field]).toBe(expected);
+      });
+
+      it.each(['', '   '])('keeps blank filters %j off the wire', async (value) => {
+        routeSearch(emptyPage);
+        await service.searchFoods(
+          { query: 'cereal', brandOwner: value, foodCategory: value },
+          createMockContext(),
+        );
+
+        expect(Object.keys(await requestBody(0))).toEqual(['query', 'pageSize', 'pageNumber']);
+      });
+
+      /**
+       * FDC parses each filter as a Lucene query that ORs its words, so a
+       * multi-word value goes as one quoted phrase.
+       */
+      it.each([
+        ['brandOwner', 'Kellogg Company', '"Kellogg Company"'],
+        ['brandOwner', '  Kellogg Company  ', '"Kellogg Company"'],
+        ['brandOwner', 'Kellogg Company\\', '"Kellogg Company\\\\"'],
+        ['brandOwner', 'Kellogg "Company"', '"Kellogg \\"Company\\""'],
+        ['brandOwner', 'Kellogg "Company', '"Kellogg \\"Company"'],
+        // One pass: a backslash before a quote is escaped once, the quote once.
+        ['brandOwner', 'a\\"b', '"a\\\\\\"b"'],
+        ['brandOwner', "Ben & Jerry's Homemade Inc.", '"Ben & Jerry\'s Homemade Inc."'],
+        ['brandOwner', 'Wal-Mart Stores, Inc.', '"Wal-Mart Stores, Inc."'],
+        ['foodCategory', 'Poultry Products', '"Poultry Products"'],
+        [
+          'foodCategory',
+          'Vegetables (raw) [fresh] +AND -OR',
+          '"Vegetables (raw) [fresh] +AND -OR"',
+        ],
+      ] as const)('sends %s %j as the phrase %j', async (field, value, expected) => {
+        routeSearch(emptyPage);
+        await service.searchFoods({ query: 'cereal', [field]: value }, createMockContext());
+
+        expect((await requestBody(0))[field]).toBe(expected);
+      });
+
+      it('leaves query escaping unchanged beside a phrase filter', async () => {
+        routeSearch(emptyPage);
+        await service.searchFoods(
+          { query: 'beef (raw', brandOwner: 'Kellogg Company', foodCategory: 'Beef Products' },
+          createMockContext(),
+        );
+
+        await expect(requestText(0)).resolves.toBe(
+          '{"query":"beef \\\\(raw","pageSize":10,"pageNumber":1,"brandOwner":"\\"Kellogg Company\\"","foodCategory":"\\"Beef Products\\""}',
+        );
+      });
+
+      it('adds requireAllWords only when it is true', async () => {
+        routeSearch(emptyPage);
+        const ctx = createMockContext();
+        await service.searchFoods({ query: 'rice brown cooked', requireAllWords: true }, ctx);
+        await service.searchFoods({ query: 'rice brown cooked', requireAllWords: false }, ctx);
+        await service.searchFoods({ query: 'rice brown cooked' }, ctx);
+
+        await expect(requestText(0)).resolves.toBe(
+          '{"query":"rice brown cooked","pageSize":10,"pageNumber":1,"requireAllWords":true}',
+        );
+        const unset = '{"query":"rice brown cooked","pageSize":10,"pageNumber":1}';
+        await expect(requestText(1)).resolves.toBe(unset);
+        await expect(requestText(2)).resolves.toBe(unset);
+      });
+    });
+
+    it('exports the 100,000-result window FDC pages within', () => {
+      expect(FDC_RESULT_WINDOW).toBe(100_000);
+    });
+
     it('fails a 400 as query_syntax naming the query, never the URL or key', async () => {
       routeSearch(() =>
         Response.json(
@@ -337,12 +857,18 @@ describe('FdcService', () => {
 
   /**
    * `query` has no length cap, so the escaper must stay linear on its worst
-   * shapes. Each shape doubles from 5k to 320k characters (64×); every size must
-   * fit a per-character CPU budget before the next runs, and the full-span ratio
-   * must stay far below the 4096× a quadratic pass would show.
+   * shapes. Each shape doubles from 10k to 320k characters against a 5k
+   * baseline (64×), and every size must fit a per-character CPU budget and grow
+   * under 256× the baseline — a quadratic pass shows 4096× — before the next
+   * size runs. Each measurement times a batch of calls, so a 5k call is not read
+   * below the timer's resolution, and keeps the least of three batches. The
+   * baseline is re-timed beside every size and the least growth across those
+   * pairs is asserted, so a move between a performance and an efficiency core
+   * between two measurements cannot fail linear work.
    */
   describe('escapeFdcQuery timing', () => {
-    const SIZES = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 320_000];
+    const BASE = 5_000;
+    const SIZES = [10_000, 20_000, 40_000, 80_000, 160_000, 320_000];
     /** Linear work at any size — about 1 µs a character plus fixed overhead. */
     const budgetUs = (size: number) => 5_000 + size;
 
@@ -366,29 +892,39 @@ describe('FdcService', () => {
       ['breaks throughout', (size) => repeat('  \r\n', size)],
     ];
 
-    /** Least thread CPU time, in µs, across a few runs — the noise floor of one call. */
-    function cpuMicros(input: string): number {
+    /** Keeps every result observable, so no call can be optimized away. */
+    let sink = 0;
+
+    /** Least thread CPU time per call, in µs, over three batches of about 320k characters each. */
+    function perCallMicros(input: string): number {
+      const calls = Math.max(1, Math.round(320_000 / input.length));
       let best = Number.POSITIVE_INFINITY;
-      for (let run = 0; run < 5; run++) {
+      for (let run = 0; run < 3; run++) {
         const start = process.threadCpuUsage();
-        escapeFdcQuery(input);
+        for (let call = 0; call < calls; call++) sink += escapeFdcQuery(input).length;
         const used = process.threadCpuUsage(start);
-        best = Math.min(best, used.user + used.system);
+        best = Math.min(best, (used.user + used.system) / calls);
       }
       return best;
     }
 
     it.each(SHAPES)('stays linear on %s', (_shape, build) => {
-      escapeFdcQuery(build(SIZES[0] ?? 0)); // warm the JIT before measuring
-      const times: number[] = [];
+      const base = build(BASE);
+      perCallMicros(base); // warm the JIT before measuring
       for (const size of SIZES) {
-        const elapsed = cpuMicros(build(size));
-        expect(elapsed, `${size} chars`).toBeLessThan(budgetUs(size));
-        times.push(elapsed);
+        const input = build(size);
+        let least = Number.POSITIVE_INFINITY;
+        let growth = Number.POSITIVE_INFINITY;
+        for (let pair = 0; pair < 2; pair++) {
+          const baseline = Math.max(perCallMicros(base), 0.01);
+          const elapsed = perCallMicros(input);
+          least = Math.min(least, elapsed);
+          growth = Math.min(growth, elapsed / baseline);
+        }
+        expect(least, `${size} chars`).toBeLessThan(budgetUs(size));
+        expect(growth, `${size} chars against ${BASE}`).toBeLessThan(256);
       }
-      const first = Math.max(times[0] ?? 0, 1);
-      const last = times.at(-1) ?? 0;
-      expect(last / first).toBeLessThan(256);
+      expect(sink).toBeGreaterThan(0);
     });
 
     it('escapes the worst shapes as specified', () => {
@@ -401,6 +937,84 @@ describe('FdcService', () => {
       expect(escapeFdcQuery('(/(/(')).toBe('\\(\\/\\(\\/\\(');
       expect(escapeFdcQuery('[a TO [a TO ')).toBe('\\[a TO \\[a TO ');
       expect(escapeFdcQuery('([a([a')).toBe('\\(\\[a\\(\\[a');
+    });
+  });
+
+  /**
+   * `brandOwner` and `foodCategory` have no length cap, so the filter encoder
+   * must stay linear. Each shape doubles from 10k to 320k characters against a
+   * 5k baseline (64×), and every size must fit a per-character CPU budget and
+   * grow under 256× the baseline — a quadratic pass shows 4096× — before the
+   * next size runs. Each measurement times a batch of calls, so a 5k call is not
+   * read below the timer's resolution, and keeps the least of three batches.
+   * The baseline is re-timed beside every size and the least growth across
+   * those pairs is asserted, so a move between a performance and an efficiency
+   * core between two measurements cannot fail linear work.
+   */
+  describe('encodeFdcFilter timing', () => {
+    const BASE = 5_000;
+    const SIZES = [10_000, 20_000, 40_000, 80_000, 160_000, 320_000];
+    /** Linear work at any size — about 1 µs a character plus fixed overhead. */
+    const budgetUs = (size: number) => 5_000 + size;
+
+    /** Builds a string of about `size` characters by repeating `unit`. */
+    const repeat = (unit: string, size: number, tail = '') =>
+      unit.repeat(Math.ceil(size / unit.length)) + tail;
+
+    const SHAPES: ReadonlyArray<readonly [string, (size: number) => string]> = [
+      ['run of backslashes', (size) => repeat('\\', size)],
+      ['run of quotes', (size) => repeat('"', size)],
+      ['alternating backslash and quote', (size) => repeat('\\"', size)],
+      ['long digit run', (size) => repeat('7', size)],
+      ['asterisk after a long run', (size) => repeat('a', size, '*')],
+      ['question mark after a long run', (size) => repeat('a', size, '?')],
+      ['one long line ending in a break', (size) => `${repeat('§1 x', size)}\ny`],
+      ['breaks throughout', (size) => repeat('  \r\n', size)],
+    ];
+
+    /** Keeps every result observable, so no call can be optimized away. */
+    let sink = 0;
+
+    /** Least thread CPU time per call, in µs, over three batches of about 320k characters each. */
+    function perCallMicros(input: string): number {
+      const calls = Math.max(1, Math.round(320_000 / input.length));
+      let best = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < 3; run++) {
+        const start = process.threadCpuUsage();
+        for (let call = 0; call < calls; call++) sink += encodeFdcFilter(input).length;
+        const used = process.threadCpuUsage(start);
+        best = Math.min(best, (used.user + used.system) / calls);
+      }
+      return best;
+    }
+
+    it.each(SHAPES)('stays linear on %s', (_shape, build) => {
+      const base = build(BASE);
+      perCallMicros(base); // warm the JIT before measuring
+      for (const size of SIZES) {
+        const input = build(size);
+        let least = Number.POSITIVE_INFINITY;
+        let growth = Number.POSITIVE_INFINITY;
+        for (let pair = 0; pair < 2; pair++) {
+          const baseline = Math.max(perCallMicros(base), 0.01);
+          const elapsed = perCallMicros(input);
+          least = Math.min(least, elapsed);
+          growth = Math.min(growth, elapsed / baseline);
+        }
+        expect(least, `${size} chars`).toBeLessThan(budgetUs(size));
+        expect(growth, `${size} chars against ${BASE}`).toBeLessThan(256);
+      }
+      expect(sink).toBeGreaterThan(0);
+    });
+
+    it('encodes the timed shapes as specified', () => {
+      expect(encodeFdcFilter('\\\\')).toBe('"\\\\\\\\"');
+      expect(encodeFdcFilter('""')).toBe('"\\"\\""');
+      expect(encodeFdcFilter('\\"')).toBe('"\\\\\\""');
+      expect(encodeFdcFilter('aa*')).toBe('aa*');
+      expect(encodeFdcFilter('aa?')).toBe('aa?');
+      expect(encodeFdcFilter('§1 x\ny')).toBe('"§1 x\ny"');
+      expect(encodeFdcFilter('  \r\n')).toBe('"  \r\n"');
     });
   });
 
