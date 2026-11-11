@@ -4,7 +4,7 @@ All notable changes to this project. Each entry links to its full per-version fi
 
 ## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-11-10
 
-Per-100 basis labels for ml and label-unit Branded foods, exact-phrase brandOwner and foodCategory filters, requireAllWords, gtinUpc, missingNutrients, and usda_get_foods batches of up to 500 IDs with the overflow in deferredIds.
+Per-100 basis labels for ml and label-unit Branded foods, phrase-matched brandOwner and foodCategory filters, requireAllWords, gtinUpc, missingNutrients, and usda_get_foods taking up to 500 IDs, fetching the first 20 distinct and returning the rest in deferredIds.
 
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-25
 
