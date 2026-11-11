@@ -1,6 +1,6 @@
 # usda-mcp-server - Directory Structure
 
-Generated on: 2026-10-26 06:57:29
+Generated on: 2026-11-11 06:45:55
 
 ```text
 usda-mcp-server/
@@ -159,6 +159,7 @@ usda-mcp-server/
 │   │           └── usda-search-foods.tool.ts
 │   ├── services/
 │   │   └── fdc/
+│   │       ├── basis.ts
 │   │       ├── fdc-service.ts
 │   │       ├── nutrient-reference.ts
 │   │       └── types.ts
@@ -171,6 +172,7 @@ usda-mcp-server/
 │   │   └── mcpb-skills.test.ts
 │   ├── services/
 │   │   └── fdc/
+│   │       ├── basis.test.ts
 │   │       ├── fdc-service.test.ts
 │   │       └── nutrient-reference.test.ts
 │   ├── tools/

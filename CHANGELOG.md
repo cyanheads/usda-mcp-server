@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-11-10
+
+Per-100 basis labels for ml and label-unit Branded foods, exact-phrase brandOwner and foodCategory filters, requireAllWords, gtinUpc, missingNutrients, and usda_get_foods batches of up to 500 IDs with the overflow in deferredIds.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-25
 
 Compact food previews, Branded label servings, and agent guidance for food selection and nutrient coverage.
