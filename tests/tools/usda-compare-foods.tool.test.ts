@@ -3,10 +3,10 @@
  * @module tests/tools/usda-compare-foods.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaCompareFoods } from '@/mcp-server/tools/definitions/usda-compare-foods.tool.js';
-import { firstText } from '../helpers.js';
+import { allText, firstText } from '../helpers.js';
 
 const { format } = usdaCompareFoods;
 if (!format) throw new Error('usda_compare_foods must declare format()');
@@ -287,8 +287,10 @@ describe('usdaCompareFoods', () => {
       nutrients: [{ id: 1089, name: 'Iron, Fe', unit: 'MG', values: [2.71, 1.47] }],
     };
     const text = firstText(format(output));
-    expect(text).toContain('| Nutrient | Spinach \\| raw | Kale, \\*baby\\* |');
-    expect(text).toContain('- **Spinach \\| raw** (FDC ID: 1, type: Branded)');
+    expect(text).toContain('| Nutrient | Spinach \\| raw (1) | Kale, \\*baby\\* (2) |');
+    expect(text).toContain(
+      '- **Spinach \\| raw** (FDC ID: 1, type: Branded, basis: per 100 label units (basis unverified, no label unit))',
+    );
   });
 
   it('formats missing data section when present', () => {
@@ -361,5 +363,242 @@ describe('usdaCompareFoods', () => {
         { fdcId: 168421, nutrientId: 1063 },
       ]);
     });
+  });
+});
+
+/** A nutrient entry as the service normalizes it. */
+const nutrient = (id: number, name: string, amount: number, unit: string) => ({
+  id,
+  name,
+  number: '',
+  amount,
+  unit,
+});
+
+/**
+ * Foundation records report energy as the Atwater estimates 2048 (specific
+ * factors) and 2047 (general factors) instead of 1008, and sugars as 1063
+ * instead of 2000. A default comparison fills those rows from the equivalent
+ * id, 2048 before 2047; an explicit nutrients[] stays literal.
+ */
+describe('usdaCompareFoods default-row fill', () => {
+  const food = (fdcId: number, nutrients: ReturnType<typeof nutrient>[]) => ({
+    fdcId,
+    description: `Food ${fdcId}`,
+    dataType: 'Foundation',
+    basisUnit: 'g' as const,
+    nutrients,
+    portions: [],
+  });
+
+  /** One food per branch of the energy fallback chain, plus one with nothing to fill from. */
+  const DIRECT = food(1, [
+    nutrient(1008, 'Energy', 40, 'kcal'),
+    nutrient(2048, 'Energy (Atwater Specific Factors)', 41, 'kcal'),
+  ]);
+  const BOTH_ESTIMATES = food(2, [
+    nutrient(2047, 'Energy (Atwater General Factors)', 52, 'kcal'),
+    nutrient(2048, 'Energy (Atwater Specific Factors)', 50.12346, 'kcal'),
+    nutrient(1063, 'Sugars, Total', 3, 'g'),
+  ]);
+  const GENERAL_ONLY = food(3, [nutrient(2047, 'Energy (Atwater General Factors)', 60, 'kcal')]);
+  const NO_ENERGY = food(4, [nutrient(2000, 'Total Sugars', 2, 'g')]);
+  const FOODS = [DIRECT, BOTH_ESTIMATES, GENERAL_ONLY, NO_ENERGY];
+
+  const compare = async (args: { nutrients?: number[]; quantity?: number }, foods = FOODS) => {
+    const service = await getServiceMock();
+    service.getFoodsBatch.mockResolvedValue({ foods, failed: [] });
+    const ctx = createMockContext({ errors: usdaCompareFoods.errors });
+    return usdaCompareFoods.handler(
+      usdaCompareFoods.input.parse({ fdcIds: foods.map((f) => f.fdcId), ...args }),
+      ctx,
+    );
+  };
+
+  it('fills Energy from 2048, then 2047, and Sugars from 1063, recording each fill', async () => {
+    const result = await compare({});
+
+    expect(result.nutrients.find((r) => r.id === 1008)).toEqual({
+      id: 1008,
+      name: 'Energy',
+      unit: 'kcal',
+      values: [40, 50.1235, 60, null],
+    });
+    expect(result.nutrients.find((r) => r.id === 2000)).toEqual({
+      id: 2000,
+      name: 'Total Sugars',
+      unit: 'g',
+      values: [null, 3, null, 2],
+    });
+    expect(result.substitutions).toEqual([
+      { fdcId: 2, requested: 1008, used: 2048 },
+      { fdcId: 3, requested: 1008, used: 2047 },
+      { fdcId: 2, requested: 2000, used: 1063 },
+    ]);
+    // An unfillable cell stays missing under the requested id; a filled one never is.
+    expect(result.missingData).toContainEqual({ fdcId: 4, nutrientId: 1008 });
+    expect(result.missingData).toContainEqual({ fdcId: 1, nutrientId: 2000 });
+    expect(result.missingData).not.toContainEqual({ fdcId: 2, nutrientId: 1008 });
+    expect(result.missingData).not.toContainEqual({ fdcId: 2, nutrientId: 2000 });
+    expect(result.missingData?.map((m) => m.nutrientId)).not.toContain(2048);
+  });
+
+  it('names a row from the nutrient reference when no food reports the requested id', async () => {
+    const result = await compare({}, [BOTH_ESTIMATES, GENERAL_ONLY]);
+
+    expect(result.nutrients.find((r) => r.id === 1008)).toEqual({
+      id: 1008,
+      name: 'Energy',
+      unit: 'KCAL',
+      values: [50.1235, 60],
+    });
+    expect(result.nutrients.find((r) => r.id === 2000)).toMatchObject({
+      name: 'Total Sugars',
+      unit: 'G',
+    });
+  });
+
+  it('scales filled values with the comparison basis', async () => {
+    const result = await compare({ quantity: 50 });
+
+    expect(result.nutrients.find((r) => r.id === 1008)?.values).toEqual([20, 25.0617, 30, null]);
+  });
+
+  it('keeps an explicit nutrients[] literal: no fill, no substitutions', async () => {
+    const result = await compare({ nutrients: [1008, 2000] });
+
+    expect(result.nutrients.find((r) => r.id === 1008)?.values).toEqual([40, null, null, null]);
+    expect(result).not.toHaveProperty('substitutions');
+    expect(result.missingData).toEqual([
+      { fdcId: 2, nutrientId: 1008 },
+      { fdcId: 3, nutrientId: 1008 },
+      { fdcId: 4, nutrientId: 1008 },
+      { fdcId: 1, nutrientId: 2000 },
+      { fdcId: 2, nutrientId: 2000 },
+      { fdcId: 3, nutrientId: 2000 },
+    ]);
+  });
+
+  it('records no substitutions when every food reports the defaults directly', async () => {
+    const result = await compare({}, [
+      food(1, [nutrient(1008, 'Energy', 40, 'kcal'), nutrient(2000, 'Total Sugars', 1, 'g')]),
+      food(2, [nutrient(1008, 'Energy', 30, 'kcal'), nutrient(2000, 'Total Sugars', 2, 'g')]),
+    ]);
+
+    expect(result).not.toHaveProperty('substitutions');
+  });
+
+  it('lists the fills in content[] and heads each column with its FDC ID', async () => {
+    const text = firstText(format(await compare({})));
+
+    expect(text).toContain('| Nutrient | Food 1 (1) | Food 2 (2) | Food 3 (3) | Food 4 (4) |');
+    expect(text).toContain('| Energy (kcal) [ID:1008] | 40 | 50.1235 | 60 | — |');
+    expect(text).toContain(
+      '**Filled from equivalent nutrients:**\n- FDC ID 2: nutrient 1008 filled from 2048\n- FDC ID 3: nutrient 1008 filled from 2047\n- FDC ID 2: nutrient 2000 filled from 1063',
+    );
+  });
+});
+
+describe('usdaCompareFoods basis disclosure', () => {
+  const food = (fdcId: number, extra: { basisUnit?: 'g' | 'ml'; servingSizeUnit?: string }) => ({
+    fdcId,
+    description: `Food ${fdcId}`,
+    dataType: extra.basisUnit === 'g' && !extra.servingSizeUnit ? 'SR Legacy' : 'Branded',
+    ...extra,
+    nutrients: [nutrient(1008, 'Energy', 100, 'kcal')],
+    portions: [],
+  });
+
+  const run = async (foods: object[], args: { quantity?: number; unit?: 'g' | 'oz' } = {}) => {
+    const service = await getServiceMock();
+    service.getFoodsBatch.mockResolvedValue({ foods, failed: [] });
+    return runToolContract(usdaCompareFoods, { fdcIds: [1, 2, 3], nutrients: [1008], ...args });
+  };
+
+  it('carries basisUnit and the label unit on each compared food', async () => {
+    const result = await run([
+      food(1, { basisUnit: 'ml', servingSizeUnit: 'ml' }),
+      food(2, { basisUnit: 'g' }),
+      food(3, { servingSizeUnit: 'IU' }),
+    ]);
+    const foods = (result.structuredContent as { foods: Array<Record<string, unknown>> }).foods;
+
+    expect(foods.map((f) => [f.fdcId, f.basisUnit, f.servingSizeUnit])).toEqual([
+      [1, 'ml', 'ml'],
+      [2, 'g', undefined],
+      [3, undefined, 'IU'],
+    ]);
+    expect(Object.hasOwn(foods[2] ?? {}, 'basisUnit')).toBe(false);
+    const text = allText(result.content);
+    expect(text).toContain(
+      '- **Food 1** (FDC ID: 1, type: Branded, label unit: ml, basis: per 100 ml)',
+    );
+    expect(text).toContain('- **Food 2** (FDC ID: 2, type: SR Legacy, basis: per 100g)');
+    expect(text).toContain(
+      '- **Food 3** (FDC ID: 3, type: Branded, label unit: IU, basis: per 100 IU label units (basis unverified))',
+    );
+  });
+
+  it('names every non-gram food in one notice, on both surfaces, in column order', async () => {
+    const result = await run(
+      [
+        food(1, { basisUnit: 'ml', servingSizeUnit: 'ml' }),
+        food(2, { basisUnit: 'g' }),
+        food(3, { servingSizeUnit: 'IU' }),
+      ],
+      { quantity: 15 },
+    );
+    const notice =
+      'FDC ID 1 reports values per 100 ml; its column is per 15 ml, compared without density conversion. FDC ID 3 has an unverified per-100 basis (label unit IU).';
+
+    expect(result.structuredContent).toMatchObject({ notice });
+    expect(allText(result.content)).toContain(`> ${notice}`);
+  });
+
+  it('says so when FDC sends no label unit', async () => {
+    const result = await run([
+      food(1, { basisUnit: 'g' }),
+      food(2, {}),
+      food(3, { basisUnit: 'g' }),
+    ]);
+
+    expect(result.structuredContent).toMatchObject({
+      notice: 'FDC ID 2 has an unverified per-100 basis (no label unit).',
+    });
+  });
+
+  it('uses the resolved gram weight for the ml column', async () => {
+    const result = await run(
+      [food(1, { basisUnit: 'ml', servingSizeUnit: 'MLT' }), food(2, { basisUnit: 'g' })],
+      { quantity: 1, unit: 'oz' },
+    );
+
+    expect(result.structuredContent).toMatchObject({
+      notice:
+        'FDC ID 1 reports values per 100 ml; its column is per 28.3495 ml, compared without density conversion.',
+    });
+  });
+
+  it('adds no notice when every food is per 100 g', async () => {
+    const result = await run([
+      food(1, { basisUnit: 'g' }),
+      food(2, { basisUnit: 'g', servingSizeUnit: 'GRM' }),
+    ]);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).not.toHaveProperty('notice');
+  });
+
+  it('escapes a Markdown-active label unit in content[] only', async () => {
+    const result = await run([food(1, { servingSizeUnit: '*IU*' }), food(2, { basisUnit: 'g' })]);
+
+    expect(result.structuredContent).toMatchObject({
+      notice: 'FDC ID 1 has an unverified per-100 basis (label unit *IU*).',
+    });
+    const text = allText(result.content);
+    expect(text).toContain('> FDC ID 1 has an unverified per-100 basis (label unit \\*IU\\*).');
+    expect(text).toContain(
+      'label unit: \\*IU\\*, basis: per 100 \\*IU\\* label units (basis unverified)',
+    );
   });
 });

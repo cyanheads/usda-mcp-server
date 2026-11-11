@@ -28,6 +28,13 @@
           "isRequired": true
         },
         {
+          "name": "USDA_CLAMP_LIMITS",
+          "description": "When true, usda_get_foods fetches the first 20 distinct FDC IDs of a larger request and returns the rest as deferredIds; false rejects a request with more than 20 IDs.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -57,6 +64,13 @@
           "description": "USDA FoodData Central API key from data.gov. Required for all food data requests.",
           "format": "string",
           "isRequired": true
+        },
+        {
+          "name": "USDA_CLAMP_LIMITS",
+          "description": "When true, usda_get_foods fetches the first 20 distinct FDC IDs of a larger request and returns the rest as deferredIds; false rejects a request with more than 20 IDs.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
         },
         {
           "name": "MCP_HTTP_HOST",

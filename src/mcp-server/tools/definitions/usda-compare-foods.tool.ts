@@ -6,7 +6,15 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import {
+  BASIS_UNIT_DESCRIPTION,
+  type BasisUnit,
+  basisLabel,
+  LABEL_UNIT_DESCRIPTION,
+} from '@/services/fdc/basis.js';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
+import { NUTRIENT_BY_ID } from '@/services/fdc/nutrient-reference.js';
+import type { FoodDetail, FoodNutrient } from '@/services/fdc/types.js';
 
 /** Default nutrient IDs for comparison when none are specified. */
 const DEFAULT_COMPARE_NUTRIENTS = [
@@ -23,6 +31,56 @@ const DEFAULT_COMPARE_NUTRIENTS = [
   1089, // Iron
   1162, // Vitamin C
 ];
+
+/**
+ * The equivalent nutrients a default row falls back to, in order, for a food
+ * that does not report the row's ID. Foundation records report energy as the
+ * Atwater estimates 2048 (specific factors, the method behind SR Legacy's
+ * 1008) and 2047 (general factors, 4-9-4), and sugars as 1063 rather than
+ * 2000. An explicit nutrients[] is never filled.
+ */
+const DEFAULT_FILLS = new Map<number, readonly number[]>([
+  [1008, [2048, 2047]],
+  [2000, [1063]],
+]);
+
+/** The default rows and their fill sources: the service filters profiles locally, so a source left out never arrives. */
+const DEFAULT_FETCH_NUTRIENTS = [
+  ...DEFAULT_COMPARE_NUTRIENTS,
+  ...[...DEFAULT_FILLS.values()].flat(),
+];
+
+/** The first of `ids` the food reports, tried in order. */
+function firstReported(food: FoodDetail, ids: readonly number[]): FoodNutrient | undefined {
+  for (const id of ids) {
+    const found = food.nutrients.find((n) => n.id === id);
+    if (found) return found;
+  }
+  return;
+}
+
+/**
+ * The caveat for a compared food not reported per 100 g: an ml food's column
+ * is per `gramWeight` millilitres, and a label unit that fixes neither leaves
+ * the basis unverified. Undefined for a per-100 g food.
+ */
+function basisCaveat(
+  fdcId: number,
+  basisUnit: BasisUnit | undefined,
+  servingSizeUnit: string | undefined,
+  gramWeight: number,
+): string | undefined {
+  switch (basisUnit) {
+    case 'g':
+      return;
+    case 'ml':
+      return `FDC ID ${fdcId} reports values per 100 ml; its column is per ${gramWeight} ml, compared without density conversion.`;
+    case undefined: {
+      const unit = servingSizeUnit?.trim();
+      return `FDC ID ${fdcId} has an unverified per-100 basis (${unit ? `label unit ${unit}` : 'no label unit'}).`;
+    }
+  }
+}
 
 /** Convert quantity in a unit to grams. */
 function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
@@ -41,7 +99,7 @@ function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
 export const usdaCompareFoods = tool('usda_compare_foods', {
   title: 'Compare USDA Foods',
   description:
-    'Compare nutrients side-by-side for 2–5 foods. Returns a structured table — one row per nutrient, one column per food — formatted as markdown. Best for "spinach vs kale iron" or "which has more protein?" questions. Omit nutrients[] to use the 12 most common defaults (energy, protein, fat, saturated fat, carbs, fiber, sugars, sodium, potassium, calcium, iron, vitamin C); provide nutrients[] with specific FDC IDs to compare different nutrients. All values are scaled to the same basis, quantity in unit: default 100 g, so unit="oz" alone compares per 100 oz and quantity alone is grams. If one or more FDC IDs are not found, the comparison proceeds with the valid foods — only throws too_few_foods when fewer than 2 IDs return data.',
+    'Compare nutrients side-by-side for 2–5 foods. Returns a structured table — one row per nutrient, one column per food — formatted as markdown. Best for "spinach vs kale iron" or "which has more protein?" questions. Omit nutrients[] to use the 12 most common defaults (energy, protein, fat, saturated fat, carbs, fiber, sugars, sodium, potassium, calcium, iron, vitamin C); a food that lacks the default energy (1008) or total sugars (2000) value has that cell filled from its equivalent nutrient — energy from 2048, then 2047; sugars from 1063 — and each fill is listed in substitutions. Provide nutrients[] with specific FDC IDs to compare different nutrients; an explicit list is compared as given, without fills. All values are scaled to the same basis, quantity in unit: default 100 g, so unit="oz" alone compares per 100 oz and quantity alone is grams. A Branded food FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent) is compared on that basis without conversion, and a notice names it. If one or more FDC IDs are not found, the comparison proceeds with the valid foods — only throws too_few_foods when fewer than 2 IDs return data.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcIds: z
@@ -53,7 +111,7 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       .array(z.number().int().min(1))
       .optional()
       .describe(
-        'Nutrient IDs to include in the comparison. Defaults to the 12 most common: energy (1008), protein (1003), total fat (1004), saturated fat (1258), carbohydrate (1005), fiber (1079), total sugars (2000), sodium (1093), potassium (1092), calcium (1087), iron (1089), vitamin C (1162). Use usda_list_nutrients to look up other IDs.',
+        'Nutrient IDs to include in the comparison. Defaults to the 12 most common: energy (1008), protein (1003), total fat (1004), saturated fat (1258), carbohydrate (1005), fiber (1079), total sugars (2000), sodium (1093), potassium (1092), calcium (1087), iron (1089), vitamin C (1162). Under the defaults, a food missing energy or total sugars has that cell filled from its equivalent nutrient (listed in substitutions); IDs given here are compared as given. Use usda_list_nutrients to look up other IDs.',
       ),
     quantity: z
       .number()
@@ -81,7 +139,7 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
         gramWeight: z
           .number()
           .describe(
-            'Gram weight resolved from quantity and unit — all nutrient values are per this many grams.',
+            'Gram weight resolved from quantity and unit — every column is per this many grams, except that a food with basisUnit "ml" is per this many millilitres and one with no basisUnit per this many label units, compared without conversion.',
           ),
       })
       .describe('The common scaling basis applied to all nutrient values.'),
@@ -94,6 +152,8 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
             dataType: z
               .string()
               .describe('FDC data source: SR Legacy, Foundation, Survey (FNDDS), or Branded.'),
+            basisUnit: z.enum(['g', 'ml']).optional().describe(BASIS_UNIT_DESCRIPTION),
+            servingSizeUnit: z.string().optional().describe(LABEL_UNIT_DESCRIPTION),
           })
           .describe('One of the compared foods.'),
       )
@@ -132,9 +192,47 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       )
       .optional()
       .describe(
-        'Foods or food+nutrient pairs where data was unavailable. Absent when all data was present.',
+        'Foods or food+nutrient pairs where data was unavailable. A cell filled from an equivalent nutrient is listed in substitutions, not here. Absent when all data was present.',
+      ),
+    substitutions: z
+      .array(
+        z
+          .object({
+            fdcId: z.number().describe('FDC ID of the food whose cell was filled.'),
+            requested: z
+              .number()
+              .describe('Nutrient ID of the row: 1008 (energy) or 2000 (total sugars).'),
+            used: z
+              .number()
+              .describe(
+                'Nutrient ID the value was taken from: 2048 or 2047 for energy, 1063 for sugars.',
+              ),
+          })
+          .describe('One default-row cell filled from an equivalent nutrient.'),
+      )
+      .optional()
+      .describe(
+        'Default-row cells filled from an equivalent nutrient because the food does not report the row ID, in nutrients[] then foods[] order. Absent when nothing was filled.',
       ),
   }),
+  enrichment: {
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Basis caveat naming each compared food not reported per 100 g: an ml food compared per basis.gramWeight millilitres, or a food whose per-100 basis is unverified, both without conversion.',
+      ),
+  },
+  enrichmentTrailer: {
+    // The notice can carry FDC's label unit, so content[] escapes it; structuredContent keeps it as sent.
+    notice: {
+      render: (notice) =>
+        escapeMarkdownInline(notice ?? '')
+          .split('\n')
+          .map((line) => `> ${line}`)
+          .join('\n'),
+    },
+  },
 
   errors: [
     {
@@ -147,7 +245,8 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
   ],
 
   async handler(input, ctx) {
-    const nutrientIds = input.nutrients?.length ? input.nutrients : DEFAULT_COMPARE_NUTRIENTS;
+    const explicit = input.nutrients?.length ? input.nutrients : undefined;
+    const nutrientIds = explicit ?? DEFAULT_COMPARE_NUTRIENTS;
     ctx.log.info('Comparing foods', { fdcIds: input.fdcIds, nutrientCount: nutrientIds.length });
 
     // Same 4-decimal precision as nutrient values, so format() can render it verbatim
@@ -156,7 +255,7 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
 
     const { foods: rawFoods, failed } = await getFdcService().getFoodsBatch(
       input.fdcIds,
-      nutrientIds,
+      explicit ?? DEFAULT_FETCH_NUTRIENTS,
       ctx,
     );
 
@@ -172,45 +271,50 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       fdcId: f.fdcId,
       description: f.description,
       dataType: f.dataType,
+      ...(f.basisUnit && { basisUnit: f.basisUnit }),
+      ...(f.servingSizeUnit && { servingSizeUnit: f.servingSizeUnit }),
     }));
 
     const missingData: Array<{ fdcId: number; nutrientId: number | null }> = failed.map((f) => ({
       fdcId: f.fdcId,
       nutrientId: null,
     }));
+    const substitutions: Array<{ fdcId: number; requested: number; used: number }> = [];
 
-    // Pivot: nutrient × food — resolve name/unit from whichever food has it
+    // Pivot: nutrient × food, each cell the requested ID or, on a default row, its first equivalent the food reports
     const nutrientRows = nutrientIds.map((nid) => {
-      let name = `Nutrient ${nid}`;
-      let unit = '';
-      for (const food of rawFoods) {
-        const n = food.nutrients.find((x) => x.id === nid);
-        if (n) {
-          name = n.name;
-          unit = n.unit;
-          break;
-        }
-      }
-
+      const fills = explicit ? [] : (DEFAULT_FILLS.get(nid) ?? []);
+      const lookup = [nid, ...fills];
       const values = rawFoods.map((food) => {
-        const n = food.nutrients.find((x) => x.id === nid);
-        if (n == null) {
+        const n = firstReported(food, lookup);
+        if (n === undefined) {
           missingData.push({ fdcId: food.fdcId, nutrientId: nid });
           return null;
         }
+        if (n.id !== nid) substitutions.push({ fdcId: food.fdcId, requested: nid, used: n.id });
         return Number((n.amount * scaleFactor).toFixed(4));
       });
 
-      return { id: nid, name, unit, values };
+      // Named for the requested ID — the first food reporting it, else the reference — never for a fill source
+      const named =
+        rawFoods.map((food) => firstReported(food, [nid])).find((n) => n !== undefined) ??
+        NUTRIENT_BY_ID.get(nid);
+      return { id: nid, name: named?.name ?? `Nutrient ${nid}`, unit: named?.unit ?? '', values };
     });
 
     const nutrientRowsFiltered = nutrientRows.filter((r) => r.values.some((v) => v !== null));
+
+    const caveats = rawFoods.flatMap(
+      (f) => basisCaveat(f.fdcId, f.basisUnit, f.servingSizeUnit, gramWeight) ?? [],
+    );
+    if (caveats.length > 0) ctx.enrich.notice(caveats.join(' '));
 
     return {
       basis: { quantity: input.quantity, unit: input.unit, gramWeight },
       foods,
       nutrients: nutrientRowsFiltered,
       ...(missingData.length > 0 && { missingData }),
+      ...(substitutions.length > 0 && { substitutions }),
     };
   },
 
@@ -222,7 +326,9 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
     );
 
     // FDC-supplied free text goes through escapeMarkdownInline, which also escapes `|` inside table cells.
-    const foodHeaders = result.foods.map((f) => escapeMarkdownInline(f.description)).join(' | ');
+    const foodHeaders = result.foods
+      .map((f) => `${escapeMarkdownInline(f.description)} (${f.fdcId})`)
+      .join(' | ');
     lines.push(`| Nutrient | ${foodHeaders} |`);
     lines.push(`| --- | ${result.foods.map(() => '---').join(' | ')} |`);
 
@@ -231,6 +337,13 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       lines.push(
         `| ${escapeMarkdownInline(row.name)} (${row.unit}) [ID:${row.id}] | ${cells.join(' | ')} |`,
       );
+    }
+
+    if (result.substitutions) {
+      lines.push('\n**Filled from equivalent nutrients:**');
+      for (const s of result.substitutions) {
+        lines.push(`- FDC ID ${s.fdcId}: nutrient ${s.requested} filled from ${s.used}`);
+      }
     }
 
     if (result.missingData && result.missingData.length > 0) {
@@ -258,8 +371,12 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
     // format-parity: structuredContent carries the foods array, text must too
     lines.push('\n**Compared foods:**');
     for (const f of result.foods) {
+      const labelUnit = f.servingSizeUnit
+        ? `, label unit: ${escapeMarkdownInline(f.servingSizeUnit)}`
+        : '';
+      const basis = escapeMarkdownInline(basisLabel(f.basisUnit, f.servingSizeUnit));
       lines.push(
-        `- **${escapeMarkdownInline(f.description)}** (FDC ID: ${f.fdcId}, type: ${f.dataType})`,
+        `- **${escapeMarkdownInline(f.description)}** (FDC ID: ${f.fdcId}, type: ${f.dataType}${labelUnit}, basis: ${basis})`,
       );
     }
 

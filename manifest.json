@@ -22,7 +22,8 @@
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
-        "USDA_FDC_API_KEY": "${user_config.USDA_FDC_API_KEY}"
+        "USDA_FDC_API_KEY": "${user_config.USDA_FDC_API_KEY}",
+        "USDA_CLAMP_LIMITS": "${user_config.USDA_CLAMP_LIMITS}"
       }
     }
   },
@@ -41,6 +42,13 @@
       "required": false,
       "sensitive": true,
       "default": ""
+    },
+    "USDA_CLAMP_LIMITS": {
+      "title": "Clamp batch size",
+      "description": "true: usda_get_foods fetches the first 20 distinct FDC IDs of a larger request and returns the rest as deferredIds. false: it rejects a request with more than 20 IDs.",
+      "type": "string",
+      "required": false,
+      "default": "true"
     }
   }
 }

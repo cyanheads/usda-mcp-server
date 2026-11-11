@@ -28,7 +28,8 @@
       "args": ["-y", "@cyanheads/usda-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
-        "USDA_FDC_API_KEY": "${user_config.USDA_FDC_API_KEY}"
+        "USDA_FDC_API_KEY": "${user_config.USDA_FDC_API_KEY}",
+        "USDA_CLAMP_LIMITS": "${user_config.USDA_CLAMP_LIMITS}"
       }
     }
   },
@@ -39,6 +40,12 @@
       "description": "API key for the USDA FoodData Central API. Get one free at https://api.data.gov/signup/",
       "sensitive": true,
       "default": ""
+    },
+    "USDA_CLAMP_LIMITS": {
+      "type": "string",
+      "title": "Clamp batch size",
+      "description": "true: usda_get_foods fetches the first 20 distinct FDC IDs of a larger request and returns the rest as deferredIds. false: it rejects a request with more than 20 IDs.",
+      "default": "true"
     }
   }
 }
