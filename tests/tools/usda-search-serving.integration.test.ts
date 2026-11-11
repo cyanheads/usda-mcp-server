@@ -305,18 +305,34 @@ describe('search and serving over real FdcService', () => {
     expect(firstText(result.content)).toContain('**Basis:** 0.33333 serving (12.3332g)');
   });
 
+  it('adds no basis notice to a gram label it serves from', async () => {
+    const result = await runToolContract(usdaGetFood, { fdcId: 2642006, unit: 'serving' });
+    expect(result.structuredContent).toMatchObject({
+      basisUnit: 'g',
+      servingSize: 37,
+      servingSizeUnit: 'GRM',
+      householdServingFullText: '1 cup',
+      scaledTo: { quantity: 1, unit: 'serving', gramWeight: 37 },
+      servingInfo: { description: 'Label serving: 37 GRM (1 cup)', gramWeight: 37 },
+    });
+    expect(result.structuredContent).not.toHaveProperty('notice');
+    expect((result.structuredContent as { servingInfo: object }).servingInfo).not.toHaveProperty(
+      'amount',
+    );
+    const text = result.content
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('\n');
+    // servingInfo is the label here, so it is not repeated as its own line
+    expect(text).not.toContain('**Label serving:**');
+    expect(text).not.toMatch(/^>/m);
+  });
+
   it.each([
     { servingSize: 0, servingSizeUnit: 'g' },
     { servingSize: -1, servingSizeUnit: 'g' },
     { servingSize: undefined, servingSizeUnit: 'g' },
     { servingSize: Number.NaN, servingSizeUnit: 'g' },
     { servingSize: Number.POSITIVE_INFINITY, servingSizeUnit: 'g' },
-    { servingSize: 37, servingSizeUnit: undefined },
-    { servingSize: 240, servingSizeUnit: 'ml' },
-    { servingSize: 240, servingSizeUnit: 'MLT' },
-    { servingSize: 37, servingSizeUnit: 'IU' },
-    { servingSize: 37, servingSizeUnit: 'MG' },
-    { servingSize: 37, servingSizeUnit: 'oz' },
   ])(
     'rejects unsupported label $servingSize $servingSizeUnit with actionable recovery',
     async (label) => {
@@ -337,6 +353,38 @@ describe('search and serving over real FdcService', () => {
         expect(text).toContain(`Label serving unit: ${label.servingSizeUnit}.`);
       if (label.servingSize != null && Number.isFinite(label.servingSize))
         expect(text).toContain(`Label serving size: ${label.servingSize}.`);
+    },
+  );
+
+  /**
+   * A label in any unit but grams sets the food's per-100 basis rather than a
+   * serving weight, so the recovery states that basis instead of offering mass
+   * units as if they converted.
+   */
+  const ML_BASIS =
+    'Values are per 100 ml; a mass-unit request (g, oz, lb, kg) is applied as millilitres without density conversion.';
+  const UNVERIFIED_BASIS =
+    'Values are per 100 label units (basis unverified); a mass-unit request (g, oz, lb, kg) is applied to that basis unconverted.';
+  it.each([
+    { servingSize: 240, servingSizeUnit: 'ml', basis: ML_BASIS },
+    { servingSize: 240, servingSizeUnit: 'MLT', basis: ML_BASIS },
+    { servingSize: 37, servingSizeUnit: 'IU', basis: UNVERIFIED_BASIS },
+    { servingSize: 37, servingSizeUnit: 'MG', basis: UNVERIFIED_BASIS },
+    { servingSize: 37, servingSizeUnit: 'oz', basis: UNVERIFIED_BASIS },
+    { servingSize: 37, servingSizeUnit: undefined, basis: UNVERIFIED_BASIS },
+  ])(
+    'rejects a $servingSize $servingSizeUnit label serving and states the basis it sets',
+    async ({ basis, ...label }) => {
+      Object.assign(detail, label);
+      const result = await runToolContract(usdaGetFood, { fdcId: 2642006, unit: 'serving' });
+      const hint = `No supported serving weight is available. Label serving size: ${label.servingSize}.${label.servingSizeUnit ? ` Label serving unit: ${label.servingSizeUnit}.` : ''} ${basis}`;
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { data: { reason: 'no_portion_data', recovery: { hint } } },
+      });
+      const text = firstText(result.content);
+      expect(text).toContain(hint);
+      expect(text).not.toContain('explicit mass-unit request');
     },
   );
 

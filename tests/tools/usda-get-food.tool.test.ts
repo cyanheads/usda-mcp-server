@@ -11,29 +11,35 @@ import {
 } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaGetFood } from '@/mcp-server/tools/definitions/usda-get-food.tool.js';
+import type { FoodDetail } from '@/services/fdc/types.js';
 import { createFdcFake } from '../fdc-fake.js';
-import { firstText } from '../helpers.js';
-
-/**
- * The McpError `fetchWithTimeout` throws for a non-2xx FDC response: the
- * status-mapped code, plus `status` and its legacy `statusCode` alias.
- */
-function fdcHttpError(status: number, message: string): McpError {
-  return new McpError(
-    status === 404 ? JsonRpcErrorCode.NotFound : JsonRpcErrorCode.ServiceUnavailable,
-    message,
-    {
-      status,
-      statusText: status === 404 ? 'Not Found' : 'Service Unavailable',
-      body: '{"error":{"code":"NOT_FOUND"}}',
-      statusCode: status,
-      responseBody: '{"error":{"code":"NOT_FOUND"}}',
-      errorSource: 'FetchHttpError',
-    },
-  );
-}
+import { allText, fdcHttpError, firstText } from '../helpers.js';
 
 let http: FetchMockHarness;
+
+/**
+ * Routes the mocked service's `getFoodDetail` through the real `FdcService`
+ * over the FDC fake for the enclosing `describe`, so a test covers FDC's
+ * record shape through normalization and the tool together.
+ */
+function useRealFdcService(): void {
+  beforeEach(async () => {
+    vi.stubEnv('USDA_FDC_API_KEY', 'test-key');
+    http = createFdcFake();
+    http.install();
+    const actual = await vi.importActual<typeof import('@/services/fdc/fdc-service.js')>(
+      '@/services/fdc/fdc-service.js',
+    );
+    const real = new actual.FdcService();
+    const service = await getServiceMock();
+    service.getFoodDetail.mockImplementation(real.getFoodDetail.bind(real));
+  });
+
+  afterEach(() => {
+    http.restore();
+    vi.unstubAllEnvs();
+  });
+}
 
 const { format } = usdaGetFood;
 if (!format) throw new Error('usda_get_food must declare format()');
@@ -58,6 +64,7 @@ const MOCK_FOOD_DETAIL = {
   fdcId: 171077,
   description: 'Chicken, broilers or fryers, breast, meat only, raw',
   dataType: 'SR Legacy',
+  basisUnit: 'g',
   foodCategory: 'Poultry Products',
   publicationDate: '2019-04-01',
   nutrients: [
@@ -66,7 +73,7 @@ const MOCK_FOOD_DETAIL = {
     { id: 1004, name: 'Total lipid (fat)', number: '204', amount: 2.62, unit: 'G' },
   ],
   portions: [{ description: '1 breast', gramWeight: 118 }],
-};
+} satisfies FoodDetail;
 
 describe('usdaGetFood', () => {
   beforeEach(async () => {
@@ -311,22 +318,7 @@ describe('usdaGetFood', () => {
   });
 
   describe('not_found over the real FdcService', () => {
-    beforeEach(async () => {
-      vi.stubEnv('USDA_FDC_API_KEY', 'test-key');
-      http = createFdcFake();
-      http.install();
-      const actual = await vi.importActual<typeof import('@/services/fdc/fdc-service.js')>(
-        '@/services/fdc/fdc-service.js',
-      );
-      const real = new actual.FdcService();
-      const service = await getServiceMock();
-      service.getFoodDetail.mockImplementation(real.getFoodDetail.bind(real));
-    });
-
-    afterEach(() => {
-      http.restore();
-      vi.unstubAllEnvs();
-    });
+    useRealFdcService();
 
     it('fails not_found with its recovery hint for an FDC 404', async () => {
       const result = await runToolContract(usdaGetFood, { fdcId: 999999999 });
@@ -415,6 +407,7 @@ describe('usdaGetFood', () => {
       fdcId: 171077,
       description: 'Chicken breast raw',
       dataType: 'SR Legacy',
+      basisUnit: 'g' as const,
       scaledTo: { quantity: 200, unit: 'g', gramWeight: 200 },
       nutrients: [],
     };
@@ -449,5 +442,420 @@ describe('usdaGetFood', () => {
     expect(text).toContain('**Serving:** 1 bar \\[large\\] \\* = 40g');
     expect(text).toContain('**All portions:** 1 bar \\[large\\] \\* (40g)');
     expect(text).toContain('- **Fat \\*total\\* \\[lipid\\] \\| \\<b>** (ID: 1004, SR#: 204): 3 g');
+  });
+
+  it('escapes label serving text, the label unit in the basis, and the GTIN', () => {
+    const text = firstText(
+      format({
+        fdcId: 1,
+        description: 'Drops',
+        dataType: 'Branded',
+        gtinUpc: '0*1',
+        servingSize: 1,
+        servingSizeUnit: '*IU*',
+        householdServingFullText: '1 [dropper]',
+        nutrients: [],
+      }),
+    );
+    expect(text).toContain('**GTIN/UPC:** 0\\*1');
+    expect(text).toContain('**Basis:** per 100 \\*IU\\* label units (basis unverified)');
+    expect(text).toContain('**Label serving:** 1 \\*IU\\* (1 \\[dropper\\])');
+  });
+
+  /**
+   * FDC reports a Branded food per 100 of its label unit: grams for g/GRM/GM,
+   * millilitres for ml/MLT, and an unverified unit for anything else. The
+   * label-unit table lives at the basis helpers' own seam; these cases prove
+   * the tool's wiring, one per side of each branch.
+   */
+  describe('per-100 basis', () => {
+    /** Kroger olive oil as the service normalizes it: a 15 ml label, per 100 ml. */
+    const ML_FOOD: FoodDetail = {
+      fdcId: 2151571,
+      description: 'EXTRA VIRGIN OLIVE OIL, EXTRA VIRGIN',
+      dataType: 'Branded',
+      basisUnit: 'ml',
+      servingSize: 15,
+      servingSizeUnit: 'ml',
+      householdServingFullText: '1 Tbsp',
+      nutrients: [{ id: 1008, name: 'Energy', number: '208', amount: 800, unit: 'KCAL' }],
+      portions: [],
+    };
+    /** A Branded label in a unit that fixes neither grams nor millilitres. */
+    const LABEL_UNIT_FOOD: FoodDetail = {
+      fdcId: 1,
+      description: 'Label-unit food',
+      dataType: 'Branded',
+      servingSize: 57,
+      servingSizeUnit: 'IU',
+      nutrients: [{ id: 1008, name: 'Energy', number: '208', amount: 10, unit: 'KCAL' }],
+      portions: [],
+    };
+    const ML_NOTICE =
+      'FDC reports this food per 100 ml (label serving in ml); 15 g was applied as 15 ml without density conversion.';
+
+    async function run(food: FoodDetail, input: Record<string, unknown>) {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockResolvedValue(food);
+      return runToolContract(usdaGetFood, { fdcId: food.fdcId, ...input });
+    }
+
+    it('scales an ml-basis food unconverted and says so on both surfaces', async () => {
+      const result = await run(ML_FOOD, { quantity: 15, unit: 'g' });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        basisUnit: 'ml',
+        scaledTo: { quantity: 15, unit: 'g', gramWeight: 15 },
+        nutrients: [{ id: 1008, amount: 120 }],
+        notice: ML_NOTICE,
+      });
+      const text = allText(result.content);
+      expect(text).toContain('**Basis:** 15 g (15 ml)');
+      expect(text).toContain(`> ${ML_NOTICE}`);
+    });
+
+    it('applies a mass unit to an unverified basis and names its label unit', async () => {
+      const result = await run(LABEL_UNIT_FOOD, { quantity: 2, unit: 'oz' });
+      const notice =
+        "FDC computed this food's values per 100 label units (IU); 2 oz was applied to that basis unconverted.";
+
+      expect(result.structuredContent).toMatchObject({
+        scaledTo: { quantity: 2, unit: 'oz', gramWeight: 56.699 },
+        nutrients: [{ amount: 5.6699 }],
+        notice,
+      });
+      expect(result.structuredContent).not.toHaveProperty('basisUnit');
+      const text = allText(result.content);
+      expect(text).toContain('**Basis:** 2 oz (56.699 IU label units)');
+      expect(text).toContain(`> ${notice}`);
+    });
+
+    it('says "no label unit" when FDC sends no label unit', async () => {
+      const { servingSizeUnit: _dropped, ...food } = LABEL_UNIT_FOOD;
+      const result = await run(food, { quantity: 15, unit: 'g' });
+
+      expect(result.structuredContent).toMatchObject({
+        notice:
+          "FDC computed this food's values per 100 label units (no label unit); 15 g was applied to that basis unconverted.",
+      });
+      expect(allText(result.content)).toContain('**Basis:** 15 g (15 label units)');
+    });
+
+    it('escapes the label unit in content[] while structuredContent keeps it as sent', async () => {
+      const result = await run({ ...LABEL_UNIT_FOOD, servingSizeUnit: '*IU*' }, { unit: 'g' });
+
+      expect(result.structuredContent).toMatchObject({
+        notice:
+          "FDC computed this food's values per 100 label units (*IU*); 100 g was applied to that basis unconverted.",
+      });
+      const text = allText(result.content);
+      expect(text).toContain(
+        "> FDC computed this food's values per 100 label units (\\*IU\\*); 100 g was applied to that basis unconverted.",
+      );
+      expect(text).toContain('**Basis:** 100 g (100 \\*IU\\* label units)');
+    });
+
+    it('keeps every line of a notice inside the blockquote when the label unit holds a line break', async () => {
+      const result = await run({ ...LABEL_UNIT_FOOD, servingSizeUnit: 'I\nU' }, { unit: 'g' });
+
+      const text = allText(result.content);
+      expect(text).toContain(
+        "> FDC computed this food's values per 100 label units (I\\\n> U); 100 g was applied to that basis unconverted.",
+      );
+    });
+
+    it.each([
+      ['a per-100 g food scaled', MOCK_FOOD_DETAIL, { quantity: 15, unit: 'g' }],
+      ['an ml-basis food left unscaled', ML_FOOD, {}],
+      ['an unverified basis left unscaled', LABEL_UNIT_FOOD, {}],
+    ])('adds no notice for %s', async (_label, food, input) => {
+      const result = await run(food, input);
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).not.toHaveProperty('notice');
+      expect(allText(result.content)).not.toMatch(/^>/m);
+    });
+
+    it.each([
+      ['**Basis:** per 100g', MOCK_FOOD_DETAIL, 'g'],
+      ['**Basis:** per 100 ml', ML_FOOD, 'ml'],
+      ['**Basis:** per 100 IU label units (basis unverified)', LABEL_UNIT_FOOD, undefined],
+    ])('renders %j for an unscaled food', async (line, food, basisUnit) => {
+      const result = await run(food, {});
+
+      expect((result.structuredContent as { basisUnit?: string }).basisUnit).toBe(basisUnit);
+      expect(firstText(result.content).split('\n')).toContain(line);
+    });
+
+    it('returns the label serving, rendered on its own line unless it is servingInfo', async () => {
+      const label = await run(ML_FOOD, {});
+      expect(label.structuredContent).toMatchObject({
+        servingSize: 15,
+        servingSizeUnit: 'ml',
+        householdServingFullText: '1 Tbsp',
+      });
+      expect(label.structuredContent).not.toHaveProperty('servingInfo');
+      expect(firstText(label.content)).toContain('**Label serving:** 15 ml (1 Tbsp)');
+
+      const portioned = await run(
+        {
+          ...ML_FOOD,
+          portions: [{ description: '1 Tbsp', gramWeight: 13.5, amount: 1 }],
+        },
+        {},
+      );
+      const portionedText = firstText(portioned.content);
+      expect(portionedText).toContain('**Serving:** 1 Tbsp = 13.5g (amount: 1)');
+      expect(portionedText).toContain('**Label serving:** 15 ml (1 Tbsp)');
+
+      const gramLabel = await run(
+        { ...ML_FOOD, basisUnit: 'g', servingSize: 37, servingSizeUnit: 'GRM' },
+        { unit: 'serving' },
+      );
+      expect(gramLabel.structuredContent).toMatchObject({
+        servingSize: 37,
+        servingSizeUnit: 'GRM',
+        servingInfo: { description: 'Label serving: 37 GRM (1 Tbsp)', gramWeight: 37 },
+      });
+      const gramLabelText = firstText(gramLabel.content);
+      expect(gramLabelText).toContain('**Serving:** Label serving: 37 GRM (1 Tbsp) = 37g');
+      expect(gramLabelText).not.toContain('**Label serving:**');
+    });
+
+    it('uses an ml label only for the basis, never as a serving weight', async () => {
+      const result = await run(ML_FOOD, { unit: 'serving' });
+
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          data: {
+            reason: 'no_portion_data',
+            recovery: {
+              hint: 'No supported serving weight is available. Label serving size: 15. Label serving unit: ml. Values are per 100 ml; a mass-unit request (g, oz, lb, kg) is applied as millilitres without density conversion.',
+            },
+          },
+        },
+      });
+    });
+  });
+
+  describe('per-100 basis over the real FdcService', () => {
+    useRealFdcService();
+
+    it('scales Kroger olive oil (15 ml label) to 15 g as 15 ml, with the notice', async () => {
+      const result = await runToolContract(usdaGetFood, {
+        fdcId: 2151571,
+        quantity: 15,
+        unit: 'g',
+        nutrients: [1008],
+      });
+      const notice =
+        'FDC reports this food per 100 ml (label serving in ml); 15 g was applied as 15 ml without density conversion.';
+
+      expect(result.structuredContent).toMatchObject({
+        basisUnit: 'ml',
+        scaledTo: { quantity: 15, unit: 'g', gramWeight: 15 },
+        nutrients: [{ id: 1008, amount: 120 }],
+        notice,
+      });
+      const text = allText(result.content);
+      expect(text).toContain('**Basis:** 15 g (15 ml)');
+      expect(text).toContain(`> ${notice}`);
+    });
+
+    it('returns milk (240 ml label) per 100 ml with its label serving and no notice', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 2078244 });
+
+      expect(result.structuredContent).toMatchObject({
+        basisUnit: 'ml',
+        servingSize: 240,
+        servingSizeUnit: 'ml',
+        householdServingFullText: '1 cup',
+        nutrients: expect.arrayContaining([expect.objectContaining({ id: 1087, amount: 125 })]),
+      });
+      expect(result.structuredContent).not.toHaveProperty('notice');
+      const text = allText(result.content);
+      expect(text).toContain('**Basis:** per 100 ml');
+      expect(text).toContain('**Label serving:** 240 ml (1 cup)');
+    });
+
+    it('keeps a per-100 g food unannotated', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 168421, quantity: 15, unit: 'g' });
+
+      expect(result.structuredContent).toMatchObject({ basisUnit: 'g' });
+      expect(result.structuredContent).not.toHaveProperty('notice');
+      expect(firstText(result.content)).toContain('**Basis:** 15 g (15g)');
+    });
+  });
+
+  /** FDC's portion `amount` rides on every portion that has one, and `content[]` shows it. */
+  describe('portion amounts', () => {
+    it('carries the amount on servingInfo and allPortions, on both surfaces', async () => {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockResolvedValue({
+        ...MOCK_FOOD_DETAIL,
+        portions: [
+          { description: '2 oz', gramWeight: 57, amount: 2 },
+          { description: 'Serving', gramWeight: 30 },
+        ],
+      });
+      const result = await runToolContract(usdaGetFood, { fdcId: 171077, unit: 'serving' });
+
+      expect(result.structuredContent).toMatchObject({
+        servingInfo: { description: '2 oz', gramWeight: 57, amount: 2 },
+        allPortions: [
+          { description: '2 oz', gramWeight: 57, amount: 2 },
+          { description: 'Serving', gramWeight: 30 },
+        ],
+      });
+      const allPortions = (result.structuredContent as { allPortions: object[] }).allPortions;
+      expect(allPortions[1]).not.toHaveProperty('amount');
+      const text = firstText(result.content);
+      expect(text).toContain('**Serving:** 2 oz = 57g (amount: 2)');
+      expect(text).toContain('**All portions:** 2 oz (57g, amount: 2), Serving (30g)');
+    });
+
+    describe('over the real FdcService', () => {
+      useRealFdcService();
+
+      it('reads the egg custard half-cup as 0.5 cup at 141 g', async () => {
+        const result = await runToolContract(usdaGetFood, { fdcId: 168787, unit: 'serving' });
+
+        expect(result.structuredContent).toMatchObject({
+          scaledTo: { quantity: 1, unit: 'serving', gramWeight: 141 },
+          servingInfo: { description: '0.5 cup', gramWeight: 141, amount: 0.5 },
+        });
+        expect(firstText(result.content)).toContain('**Serving:** 0.5 cup = 141g (amount: 0.5)');
+      });
+
+      it("keeps FDC's portion order for the noodles and serves the 57 g entry", async () => {
+        const result = await runToolContract(usdaGetFood, { fdcId: 169733, unit: 'serving' });
+
+        expect(result.structuredContent).toMatchObject({
+          scaledTo: { gramWeight: 57 },
+          servingInfo: { description: '2 oz', gramWeight: 57, amount: 2 },
+          allPortions: [
+            { description: '2 oz', gramWeight: 57, amount: 2 },
+            { description: '1 cup', gramWeight: 38, amount: 1 },
+          ],
+        });
+        expect(firstText(result.content)).toContain(
+          '**All portions:** 2 oz (57g, amount: 2), 1 cup (38g, amount: 1)',
+        );
+      });
+
+      it('leaves FNDDS portions, whose description carries the amount, without one', async () => {
+        const result = await runToolContract(usdaGetFood, { fdcId: 2708522, unit: 'serving' });
+
+        expect(result.structuredContent).toMatchObject({
+          scaledTo: { gramWeight: 105 },
+          servingInfo: { description: '1 small/regular', gramWeight: 105 },
+        });
+        const { servingInfo, allPortions } = result.structuredContent as {
+          servingInfo: object;
+          allPortions: Array<{ description: string }>;
+        };
+        expect(servingInfo).not.toHaveProperty('amount');
+        expect(allPortions.map((p) => p.description)).toEqual([
+          '1 small/regular',
+          '1 large',
+          'Quantity not specified',
+        ]);
+        expect(allPortions.every((p) => !('amount' in p))).toBe(true);
+      });
+    });
+  });
+
+  describe('GTIN and category over the real FdcService', () => {
+    useRealFdcService();
+
+    it('returns a Branded GTIN as FDC stores it, on both surfaces', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 2151571 });
+
+      expect(result.structuredContent).toMatchObject({ gtinUpc: '011110044174' });
+      expect(firstText(result.content)).toContain('**GTIN/UPC:** 011110044174');
+    });
+
+    it('omits the GTIN for a food that has none', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 168421 });
+
+      expect(result.structuredContent).not.toHaveProperty('gtinUpc');
+      expect(firstText(result.content)).not.toContain('GTIN');
+    });
+
+    it.each([
+      [2078244, 'Milk'],
+      [2151571, 'Vegetable & Cooking Oils'],
+      [2708522, 'Burritos and tacos'],
+      [168787, 'Sweets'],
+    ])('returns FDC ID %i in category %j on both surfaces', async (fdcId, category) => {
+      const result = await runToolContract(usdaGetFood, { fdcId });
+
+      expect(result.structuredContent).toMatchObject({ foodCategory: category });
+      expect(firstText(result.content)).toContain(`**Category:** ${category}`);
+    });
+  });
+
+  /**
+   * A nutrient filter names the requested IDs the food's profile does not
+   * report, so an empty or short list is never mistaken for a bad filter.
+   */
+  describe('missing nutrients', () => {
+    it('names an unreported ID and drops the empty Nutrients heading', async () => {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockResolvedValue({
+        ...MOCK_FOOD_DETAIL,
+        nutrients: [],
+        missingNutrients: [1008],
+      });
+      const result = await runToolContract(usdaGetFood, { fdcId: 171077, nutrients: [1008] });
+
+      expect(result.structuredContent).toMatchObject({ nutrients: [], missingNutrients: [1008] });
+      const text = firstText(result.content);
+      expect(text).not.toContain('### Nutrients');
+      expect(text).toContain('**Missing nutrients:** 1008 (requested, not reported by this food)');
+    });
+
+    it('says an unfiltered empty profile reports nothing rather than an empty heading', async () => {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockResolvedValue({ ...MOCK_FOOD_DETAIL, nutrients: [] });
+      const result = await runToolContract(usdaGetFood, { fdcId: 171077 });
+
+      const text = firstText(result.content);
+      expect(text).not.toContain('### Nutrients');
+      expect(text).toContain('**Nutrients:** none reported');
+      expect(result.structuredContent).not.toHaveProperty('missingNutrients');
+    });
+
+    describe('over the real FdcService', () => {
+      useRealFdcService();
+
+      it('lists only the unreported ID beside the reported ones', async () => {
+        const result = await runToolContract(usdaGetFood, {
+          fdcId: 168421,
+          nutrients: [1008, 99999, 2000],
+        });
+
+        expect(result.structuredContent).toMatchObject({
+          nutrients: [{ id: 1008 }, { id: 2000 }],
+          missingNutrients: [99999],
+        });
+        const text = firstText(result.content);
+        expect(text).toContain('### Nutrients');
+        expect(text).toContain(
+          '**Missing nutrients:** 99999 (requested, not reported by this food)',
+        );
+      });
+
+      it.each([
+        ['no filter', {}],
+        ['every requested ID present', { nutrients: [1008, 1003] }],
+      ])('omits missingNutrients with %s', async (_label, filter) => {
+        const result = await runToolContract(usdaGetFood, { fdcId: 168421, ...filter });
+
+        expect(result.structuredContent).not.toHaveProperty('missingNutrients');
+        expect(firstText(result.content)).not.toContain('Missing nutrients');
+      });
+    });
   });
 });

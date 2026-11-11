@@ -9,41 +9,24 @@ import { createWorkerHandler } from '@cyanheads/mcp-ts-core/worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaFoodResource } from '@/mcp-server/resources/definitions/usda-food.resource.js';
 import { createFdcFake } from '../fdc-fake.js';
+import { fdcHttpError } from '../helpers.js';
 
 const { params: foodParams } = usdaFoodResource;
 if (!foodParams) throw new Error('usda://food/{fdcId} must declare params');
 
-/**
- * The McpError `fetchWithTimeout` throws for a non-2xx FDC response: the
- * status-mapped code, plus `status` and its legacy `statusCode` alias.
- */
-function fdcHttpError(status: number, message: string): McpError {
-  return new McpError(
-    status === 404 ? JsonRpcErrorCode.NotFound : JsonRpcErrorCode.ServiceUnavailable,
-    message,
-    {
-      status,
-      statusText: status === 404 ? 'Not Found' : 'Service Unavailable',
-      body: '{"error":{"code":"NOT_FOUND"}}',
-      statusCode: status,
-      responseBody: '{"error":{"code":"NOT_FOUND"}}',
-      errorSource: 'FetchHttpError',
-    },
-  );
-}
-
 const PROTOCOL_VERSION = '2026-07-28';
+
+interface ResourceReadMessage {
+  error?: { code: number; message: string; data: Record<string, unknown> };
+  result?: { contents: Array<{ uri: string; mimeType?: string; text?: string }> };
+}
 
 /**
  * Reads `uri` through the framework's resource handler factory and returns the
- * JSON-RPC `error` a client receives — the path that fills the declared
- * recovery hint, which a direct `handler(...)` call never does.
+ * JSON-RPC message a client receives — the path that serializes the result and
+ * fills a declared recovery hint, neither of which a direct `handler(...)` call does.
  */
-async function readResourceError(uri: string): Promise<{
-  code: number;
-  message: string;
-  data: Record<string, unknown>;
-}> {
+async function readResource(uri: string): Promise<ResourceReadMessage> {
   // Worker initialization writes these; restored by the caller's `vi.unstubAllEnvs()`.
   vi.stubEnv('IS_SERVERLESS', undefined);
   vi.stubEnv('MCP_TRANSPORT_TYPE', undefined);
@@ -84,9 +67,23 @@ async function readResourceError(uri: string): Promise<{
         .map((line) => line.slice(5).trim())
         .join('\n')
     : text;
-  const message = JSON.parse(body) as { error?: Awaited<ReturnType<typeof readResourceError>> };
-  if (!message.error) throw new Error(`resources/read did not fail: ${text}`);
+  return JSON.parse(body) as ResourceReadMessage;
+}
+
+/** The JSON-RPC `error` of a `resources/read` that must fail. */
+async function readResourceError(uri: string): Promise<NonNullable<ResourceReadMessage['error']>> {
+  const message = await readResource(uri);
+  if (!message.error) throw new Error(`resources/read did not fail: ${JSON.stringify(message)}`);
   return message.error;
+}
+
+/** The JSON document a successful `resources/read` returns. */
+async function readResourceJson(uri: string): Promise<Record<string, unknown>> {
+  const message = await readResource(uri);
+  const text = message.result?.contents[0]?.text;
+  if (text === undefined)
+    throw new Error(`resources/read returned no text: ${JSON.stringify(message)}`);
+  return JSON.parse(text) as Record<string, unknown>;
 }
 
 let http: FetchMockHarness;
@@ -242,7 +239,7 @@ describe('usdaFoodResource', () => {
     });
   });
 
-  describe('not_found over the real FdcService', () => {
+  describe('over the real FdcService', () => {
     beforeEach(async () => {
       vi.stubEnv('USDA_FDC_API_KEY', 'test-key');
       http = createFdcFake();
@@ -272,6 +269,54 @@ describe('usdaFoodResource', () => {
       expect(http.calls.map((c) => new URL(c.request.url).pathname)).toEqual([
         '/fdc/v1/food/999999999',
       ]);
+    });
+
+    /**
+     * The resource returns the normalized profile as-is, so the JSON a client
+     * reads carries the basis, GTIN, category, and portion amounts the service
+     * derives from each data type's record shape.
+     */
+    it('reads milk (240 ml label) as per 100 ml, with its GTIN and Branded category', async () => {
+      const food = await readResourceJson('usda://food/2078244');
+
+      expect(food).toMatchObject({
+        fdcId: 2078244,
+        dataType: 'Branded',
+        basisUnit: 'ml',
+        gtinUpc: '02114029705',
+        foodCategory: 'Milk',
+        servingSize: 240,
+        servingSizeUnit: 'ml',
+        householdServingFullText: '1 cup',
+        portions: [],
+      });
+      expect(food).not.toHaveProperty('missingNutrients');
+    });
+
+    it('reads an SR Legacy half-cup portion with its amount, per 100 g', async () => {
+      const food = await readResourceJson('usda://food/168787');
+
+      expect(food).toMatchObject({
+        basisUnit: 'g',
+        foodCategory: 'Sweets',
+        portions: [{ description: '0.5 cup', gramWeight: 141, amount: 0.5 }],
+      });
+      expect(food).not.toHaveProperty('gtinUpc');
+    });
+
+    it('reads FNDDS portions as described and the WWEIA category', async () => {
+      const food = await readResourceJson('usda://food/2708522');
+
+      expect(food).toMatchObject({
+        basisUnit: 'g',
+        foodCategory: 'Burritos and tacos',
+        portions: [
+          { description: '1 small/regular', gramWeight: 105 },
+          { description: '1 large', gramWeight: 160 },
+          { description: 'Quantity not specified', gramWeight: 105 },
+        ],
+      });
+      expect((food.portions as object[]).every((p) => !('amount' in p))).toBe(true);
     });
   });
 

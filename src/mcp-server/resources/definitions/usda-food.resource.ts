@@ -19,7 +19,7 @@ const FDC_ID_PATTERN = /^[1-9][0-9]*$/;
 export const usdaFoodResource = resource('usda://food/{fdcId}', {
   name: 'USDA Food Profile',
   description:
-    'Full nutrient profile for a specific food by FDC ID. Returns all available nutrients per 100g — equivalent to usda_get_food without portion scaling. Use usda_search_foods to discover FDC IDs.',
+    'Full nutrient profile for a specific food by FDC ID. Returns all available nutrients per 100 of basisUnit: per 100 g, or per 100 ml for a Branded food labeled in ml; absent basisUnit means a label unit that fixes neither. Equivalent to usda_get_food without portion scaling. Use usda_search_foods to discover FDC IDs.',
   mimeType: 'application/json',
   params: z.object({
     fdcId: z
