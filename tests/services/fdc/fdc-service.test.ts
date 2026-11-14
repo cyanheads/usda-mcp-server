@@ -5,7 +5,7 @@
  * @module tests/services/fdc/fdc-service.test
  */
 
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import {
   createFetchMock,
   createMockContext,
@@ -36,7 +36,10 @@ import type {
 import {
   createFdcFake,
   FIXTURE_NUTRIENT_COUNT,
+  RAW_BRICK_CHEESE,
+  RAW_COTTAGE_CHEESE,
   RAW_CUSTARD,
+  RAW_DRUMSTICK,
   RAW_KALE,
   RAW_MILK,
   RAW_NOODLES,
@@ -204,7 +207,7 @@ describe('FdcService', () => {
       expect(food.foodCategory).toBe('Snacks');
     });
 
-    it('drops portions without a positive gram weight and keeps FDC order', async () => {
+    it('drops portions without a positive gram weight and keeps array order when none is numbered', async () => {
       const food = await detailOf({
         ...RAW_KALE,
         foodPortions: [
@@ -326,11 +329,11 @@ describe('FdcService', () => {
         [{ description: '0.5 cup', gramWeight: 141, amount: 0.5 }],
       ],
       [
-        'SR Legacy portions in FDC order',
+        'SR Legacy portions in sequence order',
         RAW_NOODLES,
         [
-          { description: '2 oz', gramWeight: 57, amount: 2 },
           { description: '1 cup', gramWeight: 38, amount: 1 },
+          { description: '2 oz', gramWeight: 57, amount: 2 },
         ],
       ],
       [
@@ -338,12 +341,12 @@ describe('FdcService', () => {
         RAW_ORANGE,
         [
           { description: '1 cup sections no membranes', gramWeight: 165, amount: 1 },
-          { description: '1 each 2-7/8" dia', gramWeight: 140, amount: 1 },
           {
             description: '1 RACC (reference amount customarily consumed)',
             gramWeight: 140,
             amount: 1,
           },
+          { description: '1 each 2-7/8" dia', gramWeight: 140, amount: 1 },
         ],
       ],
       [
@@ -408,6 +411,99 @@ describe('FdcService', () => {
       const food = await detailOf({ ...RAW_KALE, foodPortions: [portion] });
 
       expect(food.portions).toStrictEqual([expected]);
+    });
+  });
+
+  /**
+   * FDC sends `foodPortions` in no fixed order; its `sequenceNumber` is the
+   * display order. Valid portions sort by it, ascending, ties in FDC's array
+   * order, portions without one after the numbered ones in their own order.
+   * Asserted on the real records whose array order disagrees with it.
+   */
+  describe('portion order', () => {
+    it.each<[string, RawFoodDetail, Array<[description: string, gramWeight: number]>]>([
+      [
+        'SR Legacy 169733, sequence 2 first in the array',
+        RAW_NOODLES,
+        [
+          ['1 cup', 38],
+          ['2 oz', 57],
+        ],
+      ],
+      [
+        'SR Legacy 172176, arrayed 5, 2, 1, 3, 4',
+        RAW_BRICK_CHEESE,
+        [
+          ['1 cup, diced', 132],
+          ['1 cup, shredded', 113],
+          ['1 oz', 28.35],
+          ['1 cubic inch', 17],
+          ['1 slice (1 oz)', 28],
+        ],
+      ],
+      [
+        'Foundation 331897, two portions tied at sequence 1 in array order',
+        RAW_DRUMSTICK,
+        [
+          ['1 drumstick without skin', 94.7],
+          ['1 RACC (reference amount customarily consumed)', 114],
+          ['1 drumstick with skin', 104],
+        ],
+      ],
+      [
+        'Survey (FNDDS) 2705753, which has no sequence 1',
+        RAW_COTTAGE_CHEESE,
+        [
+          ['Quantity not specified', 105],
+          ['1 cup, dry type', 145],
+          ['1 cup, creamed', 210],
+          ['1 cup, NFS', 210],
+        ],
+      ],
+    ])('orders %s by sequenceNumber', async (_label, raw, expected) => {
+      const food = await service.getFoodDetail(raw.fdcId, undefined, createMockContext());
+
+      expect(food.portions.map((p) => [p.description, p.gramWeight])).toStrictEqual(expected);
+    });
+
+    it('leaves a record already in sequence order as FDC sent it', async () => {
+      const food = await service.getFoodDetail(SPINACH, undefined, createMockContext());
+
+      expect(food.portions.map((p) => p.description)).toEqual(['1 bunch', '1 leaf']);
+    });
+
+    it('puts unnumbered portions after numbered ones, each group in its own order', async () => {
+      const food = await detailOf({
+        ...RAW_KALE,
+        foodPortions: [
+          { gramWeight: 10, portionDescription: 'unnumbered A' },
+          { gramWeight: 20, portionDescription: 'third', sequenceNumber: 3 },
+          { gramWeight: 0, portionDescription: 'invalid', sequenceNumber: 0 },
+          { gramWeight: 30, portionDescription: 'unnumbered B' },
+          { gramWeight: 40, portionDescription: 'first', sequenceNumber: 1 },
+          { gramWeight: 50, portionDescription: 'tied third', sequenceNumber: 3 },
+          { gramWeight: 60, portionDescription: 'unnumbered C' },
+        ],
+      });
+
+      expect(food.portions.map((p) => p.description)).toEqual([
+        'first',
+        'third',
+        'tied third',
+        'unnumbered A',
+        'unnumbered B',
+        'unnumbered C',
+      ]);
+    });
+
+    it('orders the batch path the same way', async () => {
+      const { foods } = await service.getFoodsBatch(
+        [RAW_NOODLES.fdcId],
+        undefined,
+        createMockContext(),
+      );
+
+      expect(foods[0]?.portions.map((p) => p.description)).toEqual(['1 cup', '2 oz']);
     });
   });
 
@@ -853,6 +949,48 @@ describe('FdcService', () => {
       expect(text).toContain('FDC rejected the query syntax of "beef AND".');
       expect(text).toContain(`Recovery: ${hint}`);
     });
+
+    /** usda_search_foods sends a check-valid 12–14-digit code as an OR of its stored digit forms. */
+    describe('barcode digit forms through usda_search_foods', () => {
+      const hit = () =>
+        Response.json({
+          totalHits: 1,
+          currentPage: 1,
+          totalPages: 1,
+          foods: [
+            {
+              fdcId: 2739667,
+              description: ' Hillshire Farm Hearty Turkey & Cheddar Wedge',
+              dataType: 'Branded',
+              gtinUpc: '00044500975932',
+            },
+          ],
+        });
+
+      it.each([
+        [
+          { query: '044500975932' },
+          '{"query":"044500975932 OR 0044500975932 OR 00044500975932 OR 04450097593","pageSize":10,"pageNumber":1,"dataType":["Branded","Survey (FNDDS)"]}',
+        ],
+        [
+          { query: '00011110044174', requireAllWords: true },
+          '{"query":"00011110044174 OR 011110044174 OR 0011110044174 OR 01111004417","pageSize":10,"pageNumber":1,"dataType":["Branded","Survey (FNDDS)"],"requireAllWords":true}',
+        ],
+        [
+          { query: '02114029705' },
+          '{"query":"02114029705","pageSize":10,"pageNumber":1,"dataType":["Branded","Survey (FNDDS)"]}',
+        ],
+      ])('reaches FDC unescaped in one request for %o', async (args, body) => {
+        initFdcService();
+        routeSearch(hit);
+
+        const result = await runToolContract(usdaSearchFoods, args);
+
+        expect(result.isError).toBeFalsy();
+        expect(http.calls).toHaveLength(1);
+        await expect(requestText(0)).resolves.toBe(body);
+      });
+    });
   });
 
   /**
@@ -1214,8 +1352,9 @@ describe('FdcService', () => {
   });
 
   /**
-   * The retry ladder every FDC call runs: 15 s per attempt, up to 3 retries
+   * The retry ladder a search page runs: 15 s per attempt, up to 3 retries
    * with 1 s / 2 s / 4 s backoff (±25 % jitter), all inside one 45 s budget.
+   * Batch and single-record requests vary the attempt bound (their blocks below).
    * Driven on fake timers; each scenario's timings clear the jitter bounds.
    */
   describe('retry ladder', () => {
@@ -1232,7 +1371,7 @@ describe('FdcService', () => {
       });
 
     /** Answers with `response()` after `delayMs`, unless the request aborts first. */
-    const after =
+    const answersAfter =
       (delayMs: number, response: () => Response): Responder =>
       (request) =>
         new Promise((resolve, reject) => {
@@ -1319,6 +1458,21 @@ describe('FdcService', () => {
         expect(http.calls).toHaveLength(4);
       });
 
+      it('reports a complete 200 body that is not JSON as ServiceUnavailable, sent once', async () => {
+        const http = serve(() => new Response('upstream said <b>no</b> {'));
+        const call = track(service.getFoodDetail(KALE, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(call.error).toBeInstanceOf(McpError);
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: { retryable: false },
+        });
+        expect((call.error as Error).message).not.toContain('upstream said');
+        expect(http.calls).toHaveLength(1);
+      });
+
       it('retries a 503 to exhaustion and surfaces it as ServiceUnavailable', async () => {
         const http = serve(status(503));
         const call = track(service.getFoodDetail(KALE, undefined, createMockContext()));
@@ -1357,11 +1511,15 @@ describe('FdcService', () => {
       });
     });
 
+    /**
+     * A search page keeps the 15 s attempt and retries a cut one, so the
+     * ladder's attempt-timeout behavior is pinned on `searchFoods`.
+     */
     describe('total deadline', () => {
       it('rejects a stalled upstream at 45 s with retry_deadline_exceeded', async () => {
         const http = serve(stall);
         const start = Date.now();
-        const call = track(service.getFoodDetail(KALE, undefined, createMockContext()));
+        const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
 
         await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
         expect(call.settled).toBe(false);
@@ -1383,7 +1541,7 @@ describe('FdcService', () => {
         // Attempt 1 times out at 15 s; attempt 2 starts by 16.25 s and is told to
         // wait 30 s — inside maxDelayMs, past the ~29 s of budget left.
         const http = serve(stall, status(429, { 'Retry-After': '30' }));
-        const call = track(service.getFoodDetail(KALE, undefined, createMockContext()));
+        const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
 
         await vi.advanceTimersByTimeAsync(16_500);
 
@@ -1397,7 +1555,7 @@ describe('FdcService', () => {
 
       it('keeps the last 429 rather than reporting an outage when slow 429s use up the budget', async () => {
         // Each 429 takes 14.5 s to arrive, so the deadline cuts attempt 3 mid-flight.
-        const http = serve(after(14_500, status(429)));
+        const http = serve(answersAfter(14_500, status(429)));
         const call = track(service.getFoodDetail(KALE, undefined, createMockContext()));
 
         await vi.advanceTimersByTimeAsync(DEADLINE_MS);
@@ -1413,7 +1571,7 @@ describe('FdcService', () => {
       it('reports the deadline, not an earlier 429, when the later attempts stalled', async () => {
         // A fast 429, then three attempts that each run out their own 15 s timeout or the budget.
         const http = serve(status(429), stall);
-        const call = track(service.getFoodDetail(KALE, undefined, createMockContext()));
+        const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
 
         await vi.advanceTimersByTimeAsync(DEADLINE_MS);
 
@@ -1483,6 +1641,607 @@ describe('FdcService', () => {
         });
         expect(firstText(call.value?.content ?? [])).toBe('Error: caller went away');
         expect(http.calls).toHaveLength(1);
+      });
+    });
+
+    /**
+     * A request for one record — `GET /food/{id}`, a one-ID batch, and each
+     * per-ID refetch — is never cut at 15 s: its attempt runs until the call's
+     * deadline, and fast transient failures still retry inside it.
+     */
+    describe('one-record requests', () => {
+      it('returns a GET /food/{id} answer that arrives 20 s after its request', async () => {
+        const http = serve(answersAfter(20_000, () => Response.json(RAW_KALE)));
+        const call = track(service.getFoodDetail(KALE, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(call.value?.description).toBe('Kale, raw');
+        expect(http.calls).toHaveLength(1);
+      });
+
+      it('holds one attempt open to the 45 s deadline, naming the request in the error', async () => {
+        const http = serve(stall);
+        const call = track(service.getFoodDetail(KALE, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
+        expect(call.settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.Timeout,
+          message: `FDC /food/${KALE} request exceeded its 45000ms retry deadline after 1 attempt.`,
+          data: { reason: 'retry_deadline_exceeded', deadlineMs: DEADLINE_MS, retryAttempts: 1 },
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(http.calls).toHaveLength(1);
+      });
+
+      it.each([
+        ['one ID', [KALE]],
+        ['one ID repeated', [KALE, KALE]],
+      ])('sends a batch of %s as one record request, answered after 20 s', async (_label, ids) => {
+        const http = serve(answersAfter(20_000, () => Response.json([RAW_KALE])));
+        const call = track(service.getFoodsBatch(ids, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(call.value?.foods.map((f) => f.fdcId)).toEqual(ids);
+        expect(call.value?.deferredIds).toEqual([]);
+        expect(http.calls).toHaveLength(1);
+        await expect(http.calls[0]?.request.clone().json()).resolves.toEqual({ fdcIds: ids });
+      });
+
+      it('names a search request in its deadline error', async () => {
+        serve(stall);
+        const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+        expect(call.error).toMatchObject({
+          message:
+            'FDC /foods/search request exceeded its 45000ms retry deadline after 3 attempts.',
+        });
+      });
+    });
+
+    /**
+     * A multi-ID `/foods` batch keeps its 15 s attempt and retries fast
+     * failures; an attempt that times out is not retried whole. Each of its IDs
+     * is refetched as `{ fdcIds: [id] }`, all at once up to a process-wide 10
+     * in flight, inside the call's one 45 s budget.
+     */
+    describe('batch split', () => {
+      /** A stand-in FDC record for `fdcId`. */
+      const record = (fdcId: number): RawFoodDetail => ({
+        ...RAW_KALE,
+        fdcId,
+        description: `Food ${fdcId}`,
+      });
+      const found = (fdcId: number) => () => Response.json([record(fdcId)]);
+      /** FDC's answer to a `/foods` request naming no ID it knows. */
+      const unknown = () => Response.json({});
+      const range = (count: number, from: number) =>
+        Array.from({ length: count }, (_v, i) => from + i);
+
+      /** The `fdcIds` of every `/foods` request, in the order they reached the upstream. */
+      let sent: number[][];
+      /** Single-ID requests in flight now, and the most seen at once. */
+      let singles: { inFlight: number; max: number };
+      let start: number;
+
+      /** Serves every `/foods` request from the responder `pick` chooses for its `fdcIds`. */
+      function route(pick: (fdcIds: readonly number[]) => Responder): FetchMockHarness {
+        upstream = createFetchMock([
+          {
+            method: 'POST',
+            match: (request) => {
+              const url = new URL(request.url);
+              return url.origin === FDC_ORIGIN && url.pathname === '/fdc/v1/foods';
+            },
+            respond: async (request) => {
+              const { fdcIds } = (await request.clone().json()) as { fdcIds: number[] };
+              startedAt.push(Date.now() - start);
+              sent.push(fdcIds);
+              if (fdcIds.length !== 1) return pick(fdcIds)(request);
+              singles.inFlight++;
+              singles.max = Math.max(singles.max, singles.inFlight);
+              try {
+                return await pick(fdcIds)(request);
+              } finally {
+                singles.inFlight--;
+              }
+            },
+          },
+        ]);
+        upstream.install();
+        return upstream;
+      }
+
+      /** Batches stall; each single ID gets the responder `byId` names for it. */
+      const splitting = (byId: (fdcId: number) => Responder) =>
+        route((fdcIds) => (fdcIds.length > 1 ? stall : byId(fdcIds[0] ?? 0)));
+
+      beforeEach(() => {
+        sent = [];
+        singles = { inFlight: 0, max: 0 };
+        start = Date.now();
+      });
+
+      // Every ladder ends by its deadline; running the clock past it frees every pacer slot for the next test.
+      afterEach(async () => {
+        await vi.advanceTimersByTimeAsync(2 * DEADLINE_MS);
+      });
+
+      it('sends a batch that answers inside its first attempt as one request, body unchanged', async () => {
+        const ids = range(20, 171_077);
+        const http = route((fdcIds) =>
+          answersAfter(2_000, () => Response.json(fdcIds.map(record))),
+        );
+        const call = track(service.getFoodsBatch(ids, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        expect(call.value?.foods.map((f) => f.fdcId)).toEqual(ids);
+        expect(http.calls).toHaveLength(1);
+        await expect(http.calls[0]?.request.clone().text()).resolves.toBe(
+          JSON.stringify({ fdcIds: ids }),
+        );
+      });
+
+      // A 504 maps to Timeout but is FDC's answer, not the attempt's own 15 s cut, so it retries whole.
+      it.each([503, 429, 504])('retries the whole batch after a fast %i', async (code) => {
+        const ids = [11, 12];
+        let batches = 0;
+        route((fdcIds) =>
+          batches++ === 0
+            ? status(code)
+            : answersAfter(1_000, () => Response.json(fdcIds.map(record))),
+        );
+        const call = track(service.getFoodsBatch(ids, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(3_000);
+
+        expect(call.value?.foods.map((f) => f.fdcId)).toEqual(ids);
+        expect(sent).toEqual([ids, ids]);
+      });
+
+      it('refetches each ID on its own once the batch attempt runs out of time', async () => {
+        const [a, b, c] = [11, 12, 13];
+        splitting((id) =>
+          id === a
+            ? answersAfter(20_000, found(a))
+            : id === b
+              ? answersAfter(1_000, found(b))
+              : answersAfter(500, unknown),
+        );
+        const call = track(service.getFoodsBatch([a, b, c], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(sent).toEqual([[a, b, c], [a], [b], [c]]);
+        expect(startedAt).toEqual([0, 15_000, 15_000, 15_000]);
+
+        await vi.advanceTimersByTimeAsync(20_000 - 1);
+        expect(call.settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+
+        // a's answer, 20 s after its request, is returned: a one-record request is never cut at 15 s.
+        expect(call.value).toEqual({
+          foods: [expect.objectContaining({ fdcId: a }), expect.objectContaining({ fdcId: b })],
+          failed: [{ fdcId: c, error: 'FDC ID 13 not found or returned no data.' }],
+          deferredIds: [],
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(sent).toHaveLength(4);
+      });
+
+      it('refetches a repeated ID once and defers it once', async () => {
+        const [a, b] = [11, 12];
+        splitting((id) => (id === a ? stall : answersAfter(1_000, found(b))));
+        const call = track(service.getFoodsBatch([a, a, b], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+        expect(call.value).toEqual({
+          foods: [expect.objectContaining({ fdcId: b })],
+          failed: [],
+          deferredIds: [a],
+        });
+        // The batch goes out as given; the split sends one single per distinct ID.
+        expect(sent).toEqual([[a, a, b], [a], [b]]);
+      });
+
+      it('settles at the deadline, deferring the IDs FDC has not answered in request order', async () => {
+        const [a, b, c, d] = [11, 12, 13, 14];
+        splitting((id) => (id === a || id === c ? stall : answersAfter(1_000, found(id))));
+        const call = track(service.getFoodsBatch([a, b, c, d], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
+        expect(call.settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(call.value).toMatchObject({
+          foods: [{ fdcId: b }, { fdcId: d }],
+          failed: [],
+          deferredIds: [a, c],
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(sent).toHaveLength(5);
+      });
+
+      it('throws the deadline error, naming the whole budget, when no ID was answered', async () => {
+        const [a, b] = [11, 12];
+        splitting(() => stall);
+        const call = track(service.getFoodsBatch([a, b], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.Timeout,
+          message: 'FDC /foods request exceeded its 45000ms retry deadline after 3 attempts.',
+          data: { reason: 'retry_deadline_exceeded', deadlineMs: DEADLINE_MS, retryAttempts: 3 },
+        });
+        expect(sent).toEqual([[a, b], [a], [b]]);
+      });
+
+      it.each([503, 429])(
+        'defers an ID still failing with slow %is at the deadline when another was answered',
+        async (code) => {
+          const [a, b] = [11, 12];
+          splitting((id) =>
+            id === a ? answersAfter(1_000, found(a)) : answersAfter(9_000, status(code)),
+          );
+          const call = track(service.getFoodsBatch([a, b], undefined, createMockContext()));
+
+          await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+          expect(call.value).toMatchObject({ foods: [{ fdcId: a }], failed: [], deferredIds: [b] });
+          // b's ladder retried inside the budget: at least two attempts after the batch.
+          expect(sent.filter((ids) => ids.length === 1 && ids[0] === b).length).toBeGreaterThan(1);
+        },
+      );
+
+      it('reports the latest 429 when slow 429s leave every ID unanswered at the deadline', async () => {
+        splitting(() => answersAfter(14_000, status(429)));
+        const call = track(service.getFoodsBatch([11, 12], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.RateLimited,
+          data: { status: 429 },
+        });
+      });
+
+      it('reports the latest 429 when slow 429s on the batch itself use up the budget', async () => {
+        // Each 429 lands 14.5 s into its attempt, inside the 15 s cut, so the batch never splits.
+        const ids = [11, 12];
+        route(() => answersAfter(14_500, status(429)));
+        const call = track(service.getFoodsBatch(ids, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.RateLimited,
+          data: { status: 429 },
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        // Three batch attempts, the deadline cutting the third; no single-ID request.
+        expect(sent).toEqual([ids, ids, ids]);
+      });
+
+      /** The failures the ladder retries, each ending a single ID's ladder well before the deadline. */
+      const transientEnds: Array<[string, Responder, number]> = [
+        ['retries run out on fast 503s', status(503), 4],
+        ['a Retry-After outlasts the budget', status(429, { 'Retry-After': '60' }), 1],
+        [
+          'retries run out on network errors',
+          () => Promise.reject(new TypeError('fetch failed')),
+          4,
+        ],
+      ];
+
+      it.each(transientEnds)(
+        'defers an ID whose ladder ends when %s, once another ID was answered',
+        async (_label, failing, attempts) => {
+          const [a, b] = [11, 12];
+          splitting((id) => (id === a ? answersAfter(1_000, found(a)) : failing));
+          const call = track(service.getFoodsBatch([a, b], undefined, createMockContext()));
+
+          // Settled before the deadline: b's ladder ended on its own.
+          await vi.advanceTimersByTimeAsync(30_000);
+
+          expect(call.value).toEqual({
+            foods: [expect.objectContaining({ fdcId: a })],
+            failed: [],
+            deferredIds: [b],
+          });
+          expect(sent.filter((ids) => ids.length === 1 && ids[0] === b)).toHaveLength(attempts);
+        },
+      );
+
+      it('throws the transient failure when it ends every ID’s ladder and none was answered', async () => {
+        splitting(() => status(503));
+        const call = track(service.getFoodsBatch([11, 12], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: { status: 503, retryAttempts: 4 },
+        });
+      });
+
+      it('fails the call on a non-transient single-ID failure even when a transient one comes first', async () => {
+        const [a, b, c] = [11, 12, 13];
+        splitting((id) =>
+          id === a ? answersAfter(1_000, found(a)) : id === b ? status(503) : status(403),
+        );
+        const call = track(service.getFoodsBatch([a, b, c], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.Forbidden,
+          data: { status: 403 },
+        });
+      });
+
+      it('fails the call on a single-ID body that is not JSON, which is never retried or deferred', async () => {
+        const [a, b] = [11, 12];
+        splitting((id) =>
+          id === a ? answersAfter(1_000, found(a)) : () => new Response('not json'),
+        );
+        const call = track(service.getFoodsBatch([a, b], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(call.error).toBeInstanceOf(McpError);
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: { retryable: false },
+        });
+        expect(call.value).toBeUndefined();
+      });
+
+      it('fails the call on a single-ID 200 body that is not a food list, which is never retried or deferred', async () => {
+        const [a, b] = [11, 12];
+        splitting((id) =>
+          id === a ? answersAfter(1_000, found(a)) : () => Response.json({ error: 'odd' }),
+        );
+        const call = track(service.getFoodsBatch([a, b], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: { retryable: false },
+        });
+        expect(call.value).toBeUndefined();
+        expect(sent.filter((ids) => ids.length === 1 && ids[0] === b)).toHaveLength(1);
+      });
+
+      it('fails the call on a single-ID failure the deadline did not cause', async () => {
+        const [a, b] = [11, 12];
+        splitting((id) => (id === a ? answersAfter(1_000, found(a)) : status(403)));
+        const call = track(service.getFoodsBatch([a, b], undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.Forbidden,
+          data: { status: 403 },
+        });
+      });
+
+      it('never holds more than 10 single-ID requests in flight across overlapping calls', async () => {
+        splitting((id) => answersAfter(5_000, found(id)));
+        const first = track(service.getFoodsBatch(range(8, 1), undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(1_000);
+        const second = track(service.getFoodsBatch(range(8, 101), undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(singles.max).toBe(10);
+        expect(first.value?.foods.map((f) => f.fdcId)).toEqual(range(8, 1));
+        expect(second.value?.foods.map((f) => f.fdcId)).toEqual(range(8, 101));
+        // The second call's last six singles waited for the first call's answers at 20 s.
+        const secondSingles = startedAt.filter((_t, i) => (sent[i]?.[0] ?? 0) > 100).slice(1);
+        expect(secondSingles).toEqual([
+          16_000, 16_000, 20_000, 20_000, 20_000, 20_000, 20_000, 20_000,
+        ]);
+      });
+
+      it('defers an ID still queued at the deadline without sending it', async () => {
+        // b's batch fails fast, then its second attempt is cut near 16 s; c's is cut at 15.5 s,
+        // so c's nine singles hold their slots past b's deadline at 45 s.
+        const b = [201, 202, 203];
+        const c = range(9, 301);
+        let bBatches = 0;
+        route((fdcIds) => {
+          if (fdcIds.length > 1)
+            return fdcIds[0] === b[0] && bBatches++ === 0 ? status(503) : stall;
+          const [id] = fdcIds;
+          return id === 201 ? answersAfter(1_000, found(201)) : stall;
+        });
+        const bCall = track(service.getFoodsBatch(b, undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(500);
+        const cCall = track(service.getFoodsBatch(c, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 500);
+
+        expect(bCall.value).toMatchObject({
+          foods: [{ fdcId: 201 }],
+          failed: [],
+          deferredIds: [202, 203],
+        });
+        expect(sent).toContainEqual([202]);
+        expect(sent).not.toContainEqual([203]);
+
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(cCall.error).toMatchObject({ data: { reason: 'retry_deadline_exceeded' } });
+        expect(sent).not.toContainEqual([203]);
+      });
+
+      it('sends nothing for a queued ID whose slot opens as the deadline lands', async () => {
+        // As above, but c's first single answers at 45.0 s, freeing a slot at b's deadline.
+        const b = [201, 202, 203];
+        const c = range(9, 301);
+        let bBatches = 0;
+        route((fdcIds) => {
+          if (fdcIds.length > 1)
+            return fdcIds[0] === b[0] && bBatches++ === 0 ? status(503) : stall;
+          const [id] = fdcIds;
+          if (id === 201) return answersAfter(1_000, found(201));
+          return id === 301 ? answersAfter(29_500, found(301)) : stall;
+        });
+        const bCall = track(service.getFoodsBatch(b, undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(500);
+        const cCall = track(service.getFoodsBatch(c, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS + 60_000);
+
+        expect(bCall.value).toMatchObject({ deferredIds: [202, 203] });
+        expect(cCall.value).toMatchObject({ foods: [{ fdcId: 301 }] });
+        expect(sent).not.toContainEqual([203]);
+      });
+
+      it('settles at its own deadline when every ID is still queued behind another call’s slots', async () => {
+        // As above, but c's ten singles take every slot and answer at 45.3 s: past b's deadline,
+        // inside c's own. No slot opens for b by 45 s, so only b's clock can end its wait.
+        const b = [201, 202, 203];
+        const c = range(10, 301);
+        let bBatches = 0;
+        route((fdcIds) => {
+          if (fdcIds.length > 1)
+            return fdcIds[0] === b[0] && bBatches++ === 0 ? status(503) : stall;
+          return answersAfter(29_800, found(fdcIds[0] ?? 0));
+        });
+        const bCall = track(service.getFoodsBatch(b, undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(500);
+        const cCall = track(service.getFoodsBatch(c, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 500 - 1);
+        expect(bCall.settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(bCall.error).toMatchObject({
+          code: JsonRpcErrorCode.Timeout,
+          message: 'FDC /foods request exceeded its 45000ms retry deadline after 2 attempts.',
+          data: {
+            reason: 'retry_deadline_exceeded',
+            deadlineMs: DEADLINE_MS,
+            elapsedMs: DEADLINE_MS,
+            retryAttempts: 2,
+          },
+        });
+        expect(cCall.settled).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(300);
+        expect(cCall.value).toEqual({
+          foods: c.map((id) => expect.objectContaining({ fdcId: id })),
+          failed: [],
+          deferredIds: [],
+        });
+        // b's IDs left only in its two batch attempts, never as singles.
+        expect(sent.filter((ids) => ids.some((id) => b.includes(id)))).toEqual([b, b]);
+      });
+
+      it('stops on a caller abort: no partial result, no request for a queued ID, every slot freed', async () => {
+        const ids = range(14, 1);
+        splitting((id) => (id <= 2 ? answersAfter(1_000, found(id)) : stall));
+        const controller = new AbortController();
+        const call = track(
+          service.getFoodsBatch(ids, undefined, createMockContext({ signal: controller.signal })),
+        );
+
+        // 1 and 2 answer at 16 s, letting 11 and 12 start; 13 and 14 stay queued.
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(sent.filter((s) => s.length === 1)).toHaveLength(12);
+        controller.abort('caller went away');
+        await vi.advanceTimersByTimeAsync(1);
+
+        // The caller's own reason, never a partial result; the tool boundary reports it as RequestCancelled.
+        expect(call.settled).toBe(true);
+        expect(call.error).toBe('caller went away');
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(sent).not.toContainEqual([13]);
+        expect(sent).not.toContainEqual([14]);
+
+        // All ten slots are free again: a new split starts ten singles at once.
+        singles.max = 0;
+        track(service.getFoodsBatch(range(10, 501), undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(singles.max).toBe(10);
+      });
+
+      it('keeps a concurrent call whole when another call aborts mid-split, starting its queued singles as the slots free', async () => {
+        // a's eight singles stall from 15 s; b splits at 16 s into the last two slots and queues six.
+        const a = range(8, 1);
+        const b = range(8, 101);
+        splitting((id) => (id < 100 ? stall : answersAfter(5_000, found(id))));
+        const controller = new AbortController();
+        const aCall = track(
+          service.getFoodsBatch(a, undefined, createMockContext({ signal: controller.signal })),
+        );
+        await vi.advanceTimersByTimeAsync(1_000);
+        const bCall = track(service.getFoodsBatch(b, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(17_000);
+        expect(singles.inFlight).toBe(10);
+        controller.abort('caller went away');
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(aCall.error).toBe('caller went away');
+        expect(bCall.settled).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(bCall.value).toEqual({
+          foods: b.map((id) => expect.objectContaining({ fdcId: id })),
+          failed: [],
+          deferredIds: [],
+        });
+        // b's first two singles started at its split; the six queued ones the instant a's slots freed.
+        const bSingles = startedAt.filter(
+          (_t, i) => sent[i]?.length === 1 && (sent[i]?.[0] ?? 0) > 100,
+        );
+        expect(bSingles).toEqual([16_000, 16_000, 18_000, 18_000, 18_000, 18_000, 18_000, 18_000]);
+        expect(singles.max).toBe(10);
+      });
+
+      it('settles as RequestCancelled with no single-ID request when the caller aborts during the batch attempt', async () => {
+        route(() => stall);
+        const controller = new AbortController();
+        const call = track(
+          service.getFoodsBatch(
+            [11, 12],
+            undefined,
+            createMockContext({ signal: controller.signal }),
+          ),
+        );
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(call.error).toMatchObject({ code: JsonRpcErrorCode.RequestCancelled });
+        expect(sent).toEqual([[11, 12]]);
+      });
+
+      it('frees every slot when single-ID failures fail the call', async () => {
+        splitting(() => status(403));
+        const failing = track(service.getFoodsBatch(range(12, 1), undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(16_000);
+        expect(failing.error).toMatchObject({ code: JsonRpcErrorCode.Forbidden });
+
+        singles.max = 0;
+        upstream?.restore();
+        splitting((id) => answersAfter(1_000, found(id)));
+        const next = track(service.getFoodsBatch(range(10, 501), undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(16_000);
+
+        expect(singles.max).toBe(10);
+        expect(next.value?.foods).toHaveLength(10);
       });
     });
   });

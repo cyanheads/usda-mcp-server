@@ -82,6 +82,20 @@ function basisCaveat(
   }
 }
 
+/**
+ * The notice for the IDs FDC did not return before the call's deadline or kept
+ * failing on: the comparison leaves them out, and where they go next.
+ */
+function deferralNotice(distinct: number, deferredIds: number[]): string {
+  const n = deferredIds.length;
+  const them = n === 1 ? 'it' : 'them';
+  const next =
+    n === 1
+      ? `fetch it with usda_get_food (fdcId ${deferredIds[0]})`
+      : 'fetch them one at a time with usda_get_food';
+  return `${n} of the ${distinct} FDC IDs (${deferredIds.join(', ')}) went unanswered: FDC did not return ${them} before this call's deadline or kept failing, so the comparison leaves ${them} out; ${next}, or call usda_compare_foods again.`;
+}
+
 /** Convert quantity in a unit to grams. */
 function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
   switch (unit) {
@@ -99,7 +113,7 @@ function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
 export const usdaCompareFoods = tool('usda_compare_foods', {
   title: 'Compare USDA Foods',
   description:
-    'Compare nutrients side-by-side for 2–5 foods. Returns a structured table — one row per nutrient, one column per food — formatted as markdown. Best for "spinach vs kale iron" or "which has more protein?" questions. Omit nutrients[] to use the 12 most common defaults (energy, protein, fat, saturated fat, carbs, fiber, sugars, sodium, potassium, calcium, iron, vitamin C); a food that lacks the default energy (1008) or total sugars (2000) value has that cell filled from its equivalent nutrient — energy from 2048, then 2047; sugars from 1063 — and each fill is listed in substitutions. Provide nutrients[] with specific FDC IDs to compare different nutrients; an explicit list is compared as given, without fills. All values are scaled to the same basis, quantity in unit: default 100 g, so unit="oz" alone compares per 100 oz and quantity alone is grams. A Branded food FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent) is compared on that basis without conversion, and a notice names it. If one or more FDC IDs are not found, the comparison proceeds with the valid foods — only throws too_few_foods when fewer than 2 IDs return data.',
+    'Compare nutrients side-by-side for 2–5 foods. Returns a structured table — one row per nutrient, one column per food — formatted as markdown. Best for "spinach vs kale iron" or "which has more protein?" questions. Omit nutrients[] to use the 12 most common defaults (energy, protein, fat, saturated fat, carbs, fiber, sugars, sodium, potassium, calcium, iron, vitamin C); a food that lacks the default energy (1008) or total sugars (2000) value has that cell filled from its equivalent nutrient — energy from 2048, then 2047; sugars from 1063 — and each fill is listed in substitutions. Provide nutrients[] with specific FDC IDs to compare different nutrients; an explicit list is compared as given, without fills. All values are scaled to the same basis, quantity in unit: default 100 g, so unit="oz" alone compares per 100 oz and quantity alone is grams. A Branded food FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent) is compared on that basis without conversion, and a notice names it. If one or more FDC IDs are not found, the comparison proceeds with the valid foods — only throws too_few_foods when fewer than 2 IDs return data. IDs FDC does not return before the call\'s deadline (slow Foundation records, most often) or keeps failing on are left out, listed in deferredIds, and named in a notice; when that leaves fewer than 2 foods, the call fails with retry_deadline_exceeded instead, or with too_few_foods when even answers for the deferred IDs could not make 2 foods.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcIds: z
@@ -214,13 +228,19 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       .describe(
         'Default-row cells filled from an equivalent nutrient because the food does not report the row ID, in nutrients[] then foods[] order. Absent when nothing was filled.',
       ),
+    deferredIds: z
+      .array(z.number())
+      .optional()
+      .describe(
+        "Distinct requested IDs FDC did not return before the call's deadline or kept failing on, in request order. The comparison leaves them out: they appear in neither foods nor missingData. Fetch them with usda_get_food, or call usda_compare_foods again. Absent when FDC answered every ID.",
+      ),
   }),
   enrichment: {
     notice: z
       .string()
       .optional()
       .describe(
-        'Basis caveat naming each compared food not reported per 100 g: an ml food compared per basis.gramWeight millilitres, or a food whose per-100 basis is unverified, both without conversion.',
+        'Present when deferredIds is, or a compared food is not reported per 100 g. First, the IDs in deferredIds and the call that fetches them; then the basis caveat naming each food not per 100 g: an ml food compared per basis.gramWeight millilitres, or a food whose per-100 basis is unverified, both without conversion.',
       ),
   },
   enrichmentTrailer: {
@@ -242,6 +262,14 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       recovery: 'Verify IDs using usda_search_foods and provide at least 2 valid FDC IDs.',
       severity: 'notice',
     },
+    {
+      reason: 'retry_deadline_exceeded',
+      code: JsonRpcErrorCode.Timeout,
+      when: "FDC did not answer within the call's 45-second budget, across every attempt.",
+      recovery:
+        'Retry the call once. FDC builds some records slowly (Foundation foods most often); if it fails again, request fewer foods per call or fetch them one at a time with usda_get_food.',
+      thrownBy: 'service',
+    },
   ],
 
   async handler(input, ctx) {
@@ -253,17 +281,25 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
     const gramWeight = Number(toGrams(input.quantity, input.unit).toFixed(4));
     const scaleFactor = gramWeight / 100;
 
-    const { foods: rawFoods, failed } = await getFdcService().getFoodsBatch(
-      input.fdcIds,
-      explicit ?? DEFAULT_FETCH_NUTRIENTS,
-      ctx,
-    );
+    const {
+      foods: rawFoods,
+      failed,
+      deferredIds,
+    } = await getFdcService().getFoodsBatch(input.fdcIds, explicit ?? DEFAULT_FETCH_NUTRIENTS, ctx);
 
+    // Deferrals, not bad IDs, left too few foods: the caller's move is a retry, not new IDs.
+    if (rawFoods.length < 2 && rawFoods.length + deferredIds.length >= 2) {
+      throw ctx.fail(
+        'retry_deadline_exceeded',
+        `Only ${rawFoods.length} of ${input.fdcIds.length} FDC IDs returned data: FDC did not return ${deferredIds.join(', ')} before this call's deadline or kept failing.`,
+        { fdcIds: input.fdcIds, deferredIds },
+      );
+    }
     if (rawFoods.length < 2) {
       throw ctx.fail(
         'too_few_foods',
         `Only ${rawFoods.length} of ${input.fdcIds.length} FDC IDs returned data.`,
-        { fdcIds: input.fdcIds },
+        { fdcIds: input.fdcIds, ...(deferredIds.length > 0 && { deferredIds }) },
       );
     }
 
@@ -307,7 +343,11 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
     const caveats = rawFoods.flatMap(
       (f) => basisCaveat(f.fdcId, f.basisUnit, f.servingSizeUnit, gramWeight) ?? [],
     );
-    if (caveats.length > 0) ctx.enrich.notice(caveats.join(' '));
+    const notices = [
+      ...(deferredIds.length > 0 ? [deferralNotice(new Set(input.fdcIds).size, deferredIds)] : []),
+      ...caveats,
+    ];
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     return {
       basis: { quantity: input.quantity, unit: input.unit, gramWeight },
@@ -315,6 +355,7 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
       nutrients: nutrientRowsFiltered,
       ...(missingData.length > 0 && { missingData }),
       ...(substitutions.length > 0 && { substitutions }),
+      ...(deferredIds.length > 0 && { deferredIds }),
     };
   },
 
@@ -366,6 +407,10 @@ export const usdaCompareFoods = tool('usda_compare_foods', {
           lines.push(`- FDC ID ${fdcId}: missing nutrients ${nids.join(', ')}`);
         }
       }
+    }
+
+    if (result.deferredIds) {
+      lines.push(`\n**Deferred (not compared):** ${result.deferredIds.join(', ')}`);
     }
 
     // format-parity: structuredContent carries the foods array, text must too

@@ -3,7 +3,7 @@
  * @module tests/tools/usda-get-food.tool.test
  */
 
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError, timeout } from '@cyanheads/mcp-ts-core/errors';
 import {
   createMockContext,
   type FetchMockHarness,
@@ -357,6 +357,28 @@ describe('usdaGetFood', () => {
     const input = usdaGetFood.input.parse({ fdcId: 171077 });
 
     await expect(usdaGetFood.handler(input, ctx)).rejects.toThrow('Network timeout');
+  });
+
+  it('carries the declared retry_deadline_exceeded recovery to both surfaces', async () => {
+    const service = await getServiceMock();
+    service.getFoodDetail.mockRejectedValue(
+      timeout('FDC request exceeded its 45000ms retry deadline after 3 attempts.', {
+        reason: 'retry_deadline_exceeded',
+      }),
+    );
+
+    const result = await runToolContract(usdaGetFood, { fdcId: 171077 });
+
+    const hint =
+      'Retry the call once; FDC is sometimes slow to build a response, and a later attempt can answer in time.';
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.Timeout,
+        data: { reason: 'retry_deadline_exceeded', recovery: { hint } },
+      },
+    });
+    expect(allText(result.content)).toContain(`Recovery: ${hint}`);
   });
 
   it('includes portion data in result when available', async () => {
@@ -728,19 +750,19 @@ describe('usdaGetFood', () => {
         expect(firstText(result.content)).toContain('**Serving:** 0.5 cup = 141g (amount: 0.5)');
       });
 
-      it("keeps FDC's portion order for the noodles and serves the 57 g entry", async () => {
+      it('lists the noodle portions in sequence order and serves the 38 g cup', async () => {
         const result = await runToolContract(usdaGetFood, { fdcId: 169733, unit: 'serving' });
 
         expect(result.structuredContent).toMatchObject({
-          scaledTo: { gramWeight: 57 },
-          servingInfo: { description: '2 oz', gramWeight: 57, amount: 2 },
+          scaledTo: { gramWeight: 38 },
+          servingInfo: { description: '1 cup', gramWeight: 38, amount: 1 },
           allPortions: [
-            { description: '2 oz', gramWeight: 57, amount: 2 },
             { description: '1 cup', gramWeight: 38, amount: 1 },
+            { description: '2 oz', gramWeight: 57, amount: 2 },
           ],
         });
         expect(firstText(result.content)).toContain(
-          '**All portions:** 2 oz (57g, amount: 2), 1 cup (38g, amount: 1)',
+          '**All portions:** 1 cup (38g, amount: 1), 2 oz (57g, amount: 2)',
         );
       });
 
@@ -763,6 +785,110 @@ describe('usdaGetFood', () => {
         ]);
         expect(allPortions.every((p) => !('amount' in p))).toBe(true);
       });
+    });
+  });
+
+  /**
+   * The serving is the portion FDC displays first — the lowest sequenceNumber,
+   * ties in FDC's array order — whatever order FDC's array holds.
+   */
+  describe('serving portion by sequence over the real FdcService', () => {
+    useRealFdcService();
+
+    it.each([
+      {
+        fdcId: 172176,
+        serving: { description: '1 cup, diced', gramWeight: 132, amount: 1 },
+        line: '**Serving:** 1 cup, diced = 132g (amount: 1)',
+        nutrients: [
+          { id: 1008, amount: 489.72 },
+          { id: 1003, amount: 30.6768 },
+        ],
+      },
+      {
+        fdcId: 331897,
+        serving: { description: '1 drumstick without skin', gramWeight: 94.7, amount: 1 },
+        line: '**Serving:** 1 drumstick without skin = 94.7g (amount: 1)',
+        nutrients: [
+          { id: 1008, amount: 147.732 },
+          { id: 1003, amount: 22.6333 },
+        ],
+      },
+      {
+        fdcId: 2705753,
+        serving: { description: 'Quantity not specified', gramWeight: 105 },
+        line: '**Serving:** Quantity not specified = 105g',
+        nutrients: [
+          { id: 1003, amount: 10.815 },
+          { id: 1008, amount: 75.6 },
+        ],
+      },
+    ])(
+      'serves FDC ID $fdcId its lowest-sequenced portion on both surfaces',
+      async ({ fdcId, serving, line, nutrients }) => {
+        const result = await runToolContract(usdaGetFood, { fdcId, unit: 'serving' });
+
+        expect(result.structuredContent).toMatchObject({
+          scaledTo: { quantity: 1, unit: 'serving', gramWeight: serving.gramWeight },
+          servingInfo: serving,
+          nutrients,
+        });
+        expect((result.structuredContent as { servingInfo: object }).servingInfo).toStrictEqual(
+          serving,
+        );
+        const lines = firstText(result.content).split('\n');
+        expect(lines).toContain(line);
+        expect(lines).toContain(`**Basis:** 1 serving (${serving.gramWeight}g)`);
+      },
+    );
+
+    it('lists every brick cheese portion in sequence order on both surfaces', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 172176 });
+
+      const { allPortions } = result.structuredContent as {
+        allPortions: Array<{ description: string; gramWeight: number }>;
+      };
+      expect(allPortions.map((p) => [p.description, p.gramWeight])).toStrictEqual([
+        ['1 cup, diced', 132],
+        ['1 cup, shredded', 113],
+        ['1 oz', 28.35],
+        ['1 cubic inch', 17],
+        ['1 slice (1 oz)', 28],
+      ]);
+      expect(firstText(result.content)).toContain(
+        '**All portions:** 1 cup, diced (132g, amount: 1), 1 cup, shredded (113g, amount: 1), 1 oz (28.35g, amount: 1), 1 cubic inch (17g, amount: 1), 1 slice (1 oz) (28g, amount: 1)',
+      );
+    });
+
+    it('returns the lowest-sequenced servingInfo on an unscaled call too', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 169733 });
+
+      expect(result.structuredContent).not.toHaveProperty('scaledTo');
+      expect(result.structuredContent).toMatchObject({
+        servingInfo: { description: '1 cup', gramWeight: 38, amount: 1 },
+        nutrients: [
+          { id: 1008, amount: 382 },
+          { id: 1003, amount: 14.61 },
+        ],
+      });
+      expect(firstText(result.content)).toContain('**Serving:** 1 cup = 38g (amount: 1)');
+    });
+
+    it('scales the noodles to the 38 g cup', async () => {
+      const result = await runToolContract(usdaGetFood, {
+        fdcId: 169733,
+        quantity: 2,
+        unit: 'serving',
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        scaledTo: { quantity: 2, unit: 'serving', gramWeight: 76 },
+        nutrients: [
+          { id: 1008, amount: 290.32 },
+          { id: 1003, amount: 11.1036 },
+        ],
+      });
+      expect(firstText(result.content)).toContain('- **Energy** (ID: 1008, SR#: 208): 290.32 kcal');
     });
   });
 

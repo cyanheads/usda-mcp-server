@@ -3,6 +3,7 @@
  * @module tests/tools/usda-compare-foods.tool.test
  */
 
+import { JsonRpcErrorCode, timeout } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaCompareFoods } from '@/mcp-server/tools/definitions/usda-compare-foods.tool.js';
@@ -63,7 +64,11 @@ const sugars = (amount: number) => ({
 describe('usdaCompareFoods', () => {
   beforeEach(async () => {
     const service = await getServiceMock();
-    service.getFoodsBatch.mockResolvedValue({ foods: [SPINACH, KALE], failed: [] });
+    service.getFoodsBatch.mockResolvedValue({
+      foods: [SPINACH, KALE],
+      failed: [],
+      deferredIds: [],
+    });
   });
 
   it('schema rejects fdcIds containing 0 or negative values', () => {
@@ -204,6 +209,7 @@ describe('usdaCompareFoods', () => {
     service.getFoodsBatch.mockResolvedValue({
       foods: [SPINACH],
       failed: [{ fdcId: 168421, error: 'Not found.' }],
+      deferredIds: [],
     });
     const ctx = createMockContext({ errors: usdaCompareFoods.errors });
     const input = usdaCompareFoods.input.parse({ fdcIds: [168462, 168421] });
@@ -218,6 +224,7 @@ describe('usdaCompareFoods', () => {
     service.getFoodsBatch.mockResolvedValue({
       foods: [SPINACH, KALE],
       failed: [{ fdcId: 999, error: 'Not found.' }],
+      deferredIds: [],
     });
     const ctx = createMockContext({ errors: usdaCompareFoods.errors });
     const input = usdaCompareFoods.input.parse({ fdcIds: [168462, 168421, 999] });
@@ -239,7 +246,7 @@ describe('usdaCompareFoods', () => {
       nutrients: [{ id: 1003, name: 'Protein', number: '203', amount: 2.92, unit: 'G' }],
     };
     const service = await getServiceMock();
-    service.getFoodsBatch.mockResolvedValue({ foods: [foodA, foodB], failed: [] });
+    service.getFoodsBatch.mockResolvedValue({ foods: [foodA, foodB], failed: [], deferredIds: [] });
 
     const ctx = createMockContext({ errors: usdaCompareFoods.errors });
     const input = usdaCompareFoods.input.parse({
@@ -327,7 +334,11 @@ describe('usdaCompareFoods', () => {
 
     beforeEach(async () => {
       const service = await getServiceMock();
-      service.getFoodsBatch.mockResolvedValue({ foods: WITH_TOTAL_SUGARS, failed: [] });
+      service.getFoodsBatch.mockResolvedValue({
+        foods: WITH_TOTAL_SUGARS,
+        failed: [],
+        deferredIds: [],
+      });
     });
 
     it('populates the sugars row for SR Legacy foods under the default filter', async () => {
@@ -407,7 +418,7 @@ describe('usdaCompareFoods default-row fill', () => {
 
   const compare = async (args: { nutrients?: number[]; quantity?: number }, foods = FOODS) => {
     const service = await getServiceMock();
-    service.getFoodsBatch.mockResolvedValue({ foods, failed: [] });
+    service.getFoodsBatch.mockResolvedValue({ foods, failed: [], deferredIds: [] });
     const ctx = createMockContext({ errors: usdaCompareFoods.errors });
     return usdaCompareFoods.handler(
       usdaCompareFoods.input.parse({ fdcIds: foods.map((f) => f.fdcId), ...args }),
@@ -509,10 +520,18 @@ describe('usdaCompareFoods basis disclosure', () => {
     portions: [],
   });
 
-  const run = async (foods: object[], args: { quantity?: number; unit?: 'g' | 'oz' } = {}) => {
+  const run = async (
+    foods: object[],
+    args: { quantity?: number; unit?: 'g' | 'oz' } = {},
+    deferredIds: number[] = [],
+  ) => {
     const service = await getServiceMock();
-    service.getFoodsBatch.mockResolvedValue({ foods, failed: [] });
-    return runToolContract(usdaCompareFoods, { fdcIds: [1, 2, 3], nutrients: [1008], ...args });
+    service.getFoodsBatch.mockResolvedValue({ foods, failed: [], deferredIds });
+    return runToolContract(usdaCompareFoods, {
+      fdcIds: [1, 2, 3, ...deferredIds],
+      nutrients: [1008],
+      ...args,
+    });
   };
 
   it('carries basisUnit and the label unit on each compared food', async () => {
@@ -553,6 +572,26 @@ describe('usdaCompareFoods basis disclosure', () => {
 
     expect(result.structuredContent).toMatchObject({ notice });
     expect(allText(result.content)).toContain(`> ${notice}`);
+  });
+
+  it('puts the deferral ahead of the basis caveat, in one notice on both surfaces', async () => {
+    const result = await run(
+      [
+        food(1, { basisUnit: 'ml', servingSizeUnit: 'ml' }),
+        food(2, { basisUnit: 'g' }),
+        food(3, { basisUnit: 'g' }),
+      ],
+      {},
+      [4, 5],
+    );
+    const notice =
+      "2 of the 5 FDC IDs (4, 5) went unanswered: FDC did not return them before this call's deadline or kept failing, so the comparison leaves them out; fetch them one at a time with usda_get_food, or call usda_compare_foods again. FDC ID 1 reports values per 100 ml; its column is per 100 ml, compared without density conversion.";
+
+    expect(result.structuredContent).toMatchObject({ deferredIds: [4, 5], notice });
+    expect((result.structuredContent as { foods: object[] }).foods).toHaveLength(3);
+    const text = allText(result.content);
+    expect(text).toContain(`> ${notice}`);
+    expect(text).toContain('**Deferred (not compared):** 4, 5');
   });
 
   it('says so when FDC sends no label unit', async () => {
@@ -600,5 +639,109 @@ describe('usdaCompareFoods basis disclosure', () => {
     expect(text).toContain(
       'label unit: \\*IU\\*, basis: per 100 \\*IU\\* label units (basis unverified)',
     );
+  });
+});
+
+/** IDs FDC did not return before the call's deadline or kept failing on, which the service defers. */
+describe('usdaCompareFoods deferred IDs', () => {
+  const RECOVERY =
+    'Retry the call once. FDC builds some records slowly (Foundation foods most often); if it fails again, request fewer foods per call or fetch them one at a time with usda_get_food.';
+
+  /** Serves `foods` as per-100 g records, so no basis caveat joins the notice. */
+  const serve = async (foods: object[], deferredIds: number[]) => {
+    const service = await getServiceMock();
+    service.getFoodsBatch.mockResolvedValue({
+      foods: foods.map((f) => ({ ...f, basisUnit: 'g' })),
+      failed: [],
+      deferredIds,
+    });
+  };
+
+  it('compares the answered foods and routes a single deferred ID to usda_get_food', async () => {
+    await serve([SPINACH, KALE], [999]);
+    const result = await runToolContract(usdaCompareFoods, { fdcIds: [168462, 168421, 999] });
+    const notice =
+      "1 of the 3 FDC IDs (999) went unanswered: FDC did not return it before this call's deadline or kept failing, so the comparison leaves it out; fetch it with usda_get_food (fdcId 999), or call usda_compare_foods again.";
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      foods: [{ fdcId: 168462 }, { fdcId: 168421 }],
+      deferredIds: [999],
+      notice,
+    });
+    // A deferred ID is not a missing food.
+    const { missingData } = result.structuredContent as { missingData?: Array<{ fdcId: number }> };
+    expect(missingData?.map((m) => m.fdcId)).not.toContain(999);
+    const text = allText(result.content);
+    expect(text).toContain(`> ${notice}`);
+    expect(text).toContain('**Deferred (not compared):** 999');
+  });
+
+  it('omits deferredIds, the notice, and the content line when FDC answered every ID', async () => {
+    await serve([SPINACH, KALE], []);
+    const result = await runToolContract(usdaCompareFoods, { fdcIds: [168462, 168421] });
+
+    expect(result.structuredContent).not.toHaveProperty('deferredIds');
+    expect(result.structuredContent).not.toHaveProperty('notice');
+    expect(allText(result.content)).not.toContain('Deferred');
+  });
+
+  it('fails with retry_deadline_exceeded, not too_few_foods, when deferrals leave fewer than 2 foods', async () => {
+    await serve([SPINACH], [168421]);
+    const result = await runToolContract(usdaCompareFoods, { fdcIds: [168462, 168421] });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.Timeout,
+        message:
+          "Only 1 of 2 FDC IDs returned data: FDC did not return 168421 before this call's deadline or kept failing.",
+        data: {
+          reason: 'retry_deadline_exceeded',
+          deferredIds: [168421],
+          recovery: { hint: RECOVERY },
+        },
+      },
+    });
+    expect(allText(result.content)).toContain(RECOVERY);
+  });
+
+  it('fails with too_few_foods when even an answer for every deferred ID leaves fewer than 2 foods', async () => {
+    const service = await getServiceMock();
+    service.getFoodsBatch.mockResolvedValue({
+      foods: [],
+      failed: [{ fdcId: 999, error: 'Not found.' }],
+      deferredIds: [168421],
+    });
+    const result = await runToolContract(usdaCompareFoods, { fdcIds: [999, 168421] });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ValidationError,
+        message: 'Only 0 of 2 FDC IDs returned data.',
+        data: { reason: 'too_few_foods', deferredIds: [168421] },
+      },
+    });
+  });
+
+  it('carries the recovery hint on both surfaces when the service fails the call at the deadline', async () => {
+    const service = await getServiceMock();
+    service.getFoodsBatch.mockRejectedValue(
+      timeout('FDC /foods request exceeded its 45000ms retry deadline after 3 attempts.', {
+        reason: 'retry_deadline_exceeded',
+        deadlineMs: 45_000,
+        retryAttempts: 3,
+      }),
+    );
+    const result = await runToolContract(usdaCompareFoods, { fdcIds: [168462, 168421] });
+
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.Timeout,
+        data: { reason: 'retry_deadline_exceeded', recovery: { hint: RECOVERY } },
+      },
+    });
+    expect(allText(result.content)).toContain(RECOVERY);
   });
 });

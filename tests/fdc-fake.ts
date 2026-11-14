@@ -16,7 +16,10 @@
  * FNDDS `portionDescription`, food-code modifiers, and `wweiaFoodCategory`;
  * SR Legacy and Foundation portion amounts and measure units; Foundation
  * records that report energy only as Atwater estimates (2047, 2048) and
- * sugars only as 1063; Branded labels in GRM and in IU.
+ * sugars only as 1063; Branded labels in GRM and in IU. Portions keep FDC's
+ * array order and `sequenceNumber`, which disagree on some records
+ * (noodles, brick cheese, drumstick, cottage cheese, oranges); a record's
+ * portion list may be a subset of what FDC sends.
  * @module tests/fdc-fake
  */
 
@@ -35,7 +38,9 @@ export const RAW_KALE: RawFoodDetail = {
   dataType: 'SR Legacy',
   publicationDate: '4/1/2019',
   foodCategory: { description: 'Vegetables and Vegetable Products' },
-  foodPortions: [{ amount: 1, gramWeight: 21, modifier: 'cup', measureUnit: UNDETERMINED }],
+  foodPortions: [
+    { amount: 1, gramWeight: 21, modifier: 'cup', measureUnit: UNDETERMINED, sequenceNumber: 1 },
+  ],
   foodNutrients: [
     { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 35 },
     { nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' }, amount: 2.92 },
@@ -86,8 +91,14 @@ export const RAW_SPINACH: RawFoodDetail = {
   publicationDate: '4/1/2019',
   foodCategory: { description: 'Vegetables and Vegetable Products' },
   foodPortions: [
-    { amount: 1, gramWeight: 340, modifier: 'bunch', measureUnit: UNDETERMINED },
-    { amount: 1, gramWeight: 10, modifier: 'leaf', measureUnit: UNDETERMINED },
+    {
+      amount: 1,
+      gramWeight: 340,
+      modifier: 'bunch',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 2,
+    },
+    { amount: 1, gramWeight: 10, modifier: 'leaf', measureUnit: UNDETERMINED, sequenceNumber: 3 },
   ],
   foodNutrients: [
     { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 23 },
@@ -132,14 +143,16 @@ export const RAW_CUSTARD: RawFoodDetail = {
   dataType: 'SR Legacy',
   publicationDate: '4/1/2019',
   foodCategory: { description: 'Sweets' },
-  foodPortions: [{ amount: 0.5, gramWeight: 141, modifier: 'cup', measureUnit: UNDETERMINED }],
+  foodPortions: [
+    { amount: 0.5, gramWeight: 141, modifier: 'cup', measureUnit: UNDETERMINED, sequenceNumber: 1 },
+  ],
   foodNutrients: [
     { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 112 },
     { nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' }, amount: 4.13 },
   ],
 };
 
-/** Spinach egg noodles (SR Legacy) — FDC lists the 2 oz portion before the cup. */
+/** Spinach egg noodles (SR Legacy) — FDC lists the 2 oz portion (sequence 2) before the cup (sequence 1). */
 export const RAW_NOODLES: RawFoodDetail = {
   fdcId: 169733,
   description: 'Noodles, egg, spinach, enriched, dry',
@@ -156,7 +169,10 @@ export const RAW_NOODLES: RawFoodDetail = {
   ],
 };
 
-/** Navel oranges (Foundation) — real measure units, a padded modifier, and a RACC. */
+/**
+ * Navel oranges (Foundation) — real measure units, a padded modifier, and a
+ * RACC that shares sequence 1 with the cup and follows it in FDC's array.
+ */
 export const RAW_ORANGE: RawFoodDetail = {
   fdcId: 746771,
   description: 'Oranges, raw, navels',
@@ -169,14 +185,21 @@ export const RAW_ORANGE: RawFoodDetail = {
       gramWeight: 165,
       modifier: 'sections no membranes',
       measureUnit: { id: 1000, name: 'cup', abbreviation: 'cup' },
+      sequenceNumber: 1,
     },
     {
       amount: 1,
       gramWeight: 140,
       modifier: ' 2-7/8" dia',
       measureUnit: { id: 1071, name: 'each', abbreviation: 'each' },
+      sequenceNumber: 2,
     },
-    { amount: 1, gramWeight: 140, measureUnit: { id: 1121, name: 'RACC', abbreviation: 'RACC' } },
+    {
+      amount: 1,
+      gramWeight: 140,
+      measureUnit: { id: 1121, name: 'RACC', abbreviation: 'RACC' },
+      sequenceNumber: 1,
+    },
   ],
   foodNutrients: [
     { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 47 },
@@ -199,23 +222,154 @@ export const RAW_TACO: RawFoodDetail = {
       modifier: '64772',
       portionDescription: '1 small/regular',
       measureUnit: UNDETERMINED,
+      sequenceNumber: 2,
     },
     {
       gramWeight: 160,
       modifier: '60919',
       portionDescription: '1 large',
       measureUnit: UNDETERMINED,
+      sequenceNumber: 3,
     },
     {
       gramWeight: 105,
       modifier: '90000',
       portionDescription: 'Quantity not specified',
       measureUnit: UNDETERMINED,
+      sequenceNumber: 5,
     },
   ],
   foodNutrients: [
     { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 257 },
     { nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' }, amount: 16.7 },
+  ],
+};
+
+/** Brick cheese (SR Legacy) — five portions whose array order (5, 2, 1, 3, 4) is not FDC's display order. */
+export const RAW_BRICK_CHEESE: RawFoodDetail = {
+  fdcId: 172176,
+  description: 'Cheese, brick',
+  dataType: 'SR Legacy',
+  publicationDate: '4/1/2019',
+  foodCategory: { description: 'Dairy and Egg Products' },
+  foodPortions: [
+    {
+      amount: 1,
+      gramWeight: 28,
+      modifier: 'slice (1 oz)',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 5,
+    },
+    {
+      amount: 1,
+      gramWeight: 113,
+      modifier: 'cup, shredded',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 2,
+    },
+    {
+      amount: 1,
+      gramWeight: 132,
+      modifier: 'cup, diced',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 1,
+    },
+    { amount: 1, gramWeight: 28.35, modifier: 'oz', measureUnit: UNDETERMINED, sequenceNumber: 3 },
+    {
+      amount: 1,
+      gramWeight: 17,
+      modifier: 'cubic inch',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 4,
+    },
+  ],
+  foodNutrients: [
+    { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 371 },
+    { nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' }, amount: 23.24 },
+  ],
+};
+
+/**
+ * Braised drumstick (Foundation) — a household measure and the RACC share
+ * sequence 1, the household measure first in FDC's array.
+ */
+export const RAW_DRUMSTICK: RawFoodDetail = {
+  fdcId: 331897,
+  description: 'Chicken, broilers or fryers, drumstick, meat only, cooked, braised',
+  dataType: 'Foundation',
+  publicationDate: '4/1/2019',
+  foodCategory: { description: 'Poultry Products' },
+  foodPortions: [
+    {
+      amount: 1,
+      gramWeight: 104,
+      modifier: 'with skin',
+      measureUnit: { id: 1026, name: 'drumstick', abbreviation: 'drumstick' },
+      sequenceNumber: 2,
+    },
+    {
+      amount: 1,
+      gramWeight: 94.7,
+      modifier: 'without skin',
+      measureUnit: { id: 1026, name: 'drumstick', abbreviation: 'drumstick' },
+      sequenceNumber: 1,
+    },
+    {
+      amount: 1,
+      gramWeight: 114,
+      measureUnit: { id: 1121, name: 'RACC', abbreviation: 'RACC' },
+      sequenceNumber: 1,
+    },
+  ],
+  foodNutrients: [
+    { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 156 },
+    { nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' }, amount: 23.9 },
+  ],
+};
+
+/** Dry-curd cottage cheese (Survey (FNDDS)) — its portions start at sequence 2, with no sequence 1. */
+export const RAW_COTTAGE_CHEESE: RawFoodDetail = {
+  fdcId: 2705753,
+  description: 'Cheese, cottage, dry curd',
+  dataType: 'Survey (FNDDS)',
+  publicationDate: '10/31/2024',
+  wweiaFoodCategory: {
+    wweiaFoodCategoryCode: 3299054,
+    wweiaFoodCategoryDescription: 'Cottage/ricotta cheese',
+  },
+  foodPortions: [
+    {
+      gramWeight: 145,
+      modifier: '10072',
+      portionDescription: '1 cup, dry type',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 3,
+    },
+    {
+      gramWeight: 210,
+      modifier: '10339',
+      portionDescription: '1 cup, creamed',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 4,
+    },
+    {
+      gramWeight: 105,
+      modifier: '90000',
+      portionDescription: 'Quantity not specified',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 2,
+    },
+    {
+      gramWeight: 210,
+      modifier: '10010',
+      portionDescription: '1 cup, NFS',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 5,
+    },
+  ],
+  foodNutrients: [
+    { nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' }, amount: 10.3 },
+    { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 72 },
   ],
 };
 
@@ -285,6 +439,7 @@ export const RAW_BROCCOLI: RawFoodDetail = {
       gramWeight: 76,
       modifier: 'chopped',
       measureUnit: { id: 1000, name: 'cup', abbreviation: 'cup' },
+      sequenceNumber: 1,
     },
   ],
   foodNutrients: [
@@ -311,7 +466,13 @@ export const RAW_BROCCOLI_SR: RawFoodDetail = {
   publicationDate: '4/1/2019',
   foodCategory: { description: 'Vegetables and Vegetable Products' },
   foodPortions: [
-    { amount: 0.5, gramWeight: 44, modifier: 'cup, chopped or diced', measureUnit: UNDETERMINED },
+    {
+      amount: 0.5,
+      gramWeight: 44,
+      modifier: 'cup, chopped or diced',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 5,
+    },
   ],
   foodNutrients: [
     nutrient(1008, '208', 'Energy', 'kcal', 34),
@@ -340,7 +501,12 @@ export const RAW_FLOUR: RawFoodDetail = {
   publicationDate: '10/28/2021',
   foodCategory: { description: 'Cereal Grains and Pasta' },
   foodPortions: [
-    { amount: 1, gramWeight: 30, measureUnit: { id: 1121, name: 'RACC', abbreviation: 'RACC' } },
+    {
+      amount: 1,
+      gramWeight: 30,
+      measureUnit: { id: 1121, name: 'RACC', abbreviation: 'RACC' },
+      sequenceNumber: 1,
+    },
   ],
   foodNutrients: [
     nutrient(2047, '957', 'Energy (Atwater General Factors)', 'kcal', 357.0648),
@@ -409,7 +575,13 @@ export const RAW_OLIVE_OIL_SR: RawFoodDetail = {
   publicationDate: '4/1/2019',
   foodCategory: { description: 'Fats and Oils' },
   foodPortions: [
-    { amount: 1, gramWeight: 13.5, modifier: 'tablespoon', measureUnit: UNDETERMINED },
+    {
+      amount: 1,
+      gramWeight: 13.5,
+      modifier: 'tablespoon',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 1,
+    },
   ],
   foodNutrients: [
     nutrient(1008, '208', 'Energy', 'kcal', 884),
@@ -493,6 +665,9 @@ const CATALOG = new Map<number, RawFoodDetail>(
     RAW_NOODLES,
     RAW_ORANGE,
     RAW_TACO,
+    RAW_BRICK_CHEESE,
+    RAW_DRUMSTICK,
+    RAW_COTTAGE_CHEESE,
     RAW_MILK,
     RAW_OLIVE_OIL,
     RAW_BROCCOLI,

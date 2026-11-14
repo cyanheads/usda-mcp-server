@@ -4,7 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, timeout } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -890,19 +890,22 @@ describe('usdaSearchFoods', () => {
   });
 
   describe('bare digit queries', () => {
-    it.each(['11111000', '02114029705', '00012345678905', ' 02114029705 '])(
-      'defaults %j to Branded and Survey (FNDDS)',
-      async (query) => {
-        const service = await getServiceMock();
-        const ctx = createMockContext({ errors: usdaSearchFoods.errors });
-        await usdaSearchFoods.handler(usdaSearchFoods.input.parse({ query }), ctx);
+    it.each([
+      ['11111000', '11111000'],
+      ['02114029705', '02114029705'],
+      // A check-valid 14-digit GTIN goes out in its stored digit forms.
+      ['00012345678905', '00012345678905 OR 012345678905 OR 0012345678905 OR 01234567890'],
+      [' 02114029705 ', '02114029705'],
+    ])('defaults %j to Branded and Survey (FNDDS)', async (query, fdcQuery) => {
+      const service = await getServiceMock();
+      const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+      await usdaSearchFoods.handler(usdaSearchFoods.input.parse({ query }), ctx);
 
-        expect(service.searchFoods).toHaveBeenCalledWith(
-          expect.objectContaining({ query: query.trim(), dataType: ['Branded', 'Survey (FNDDS)'] }),
-          ctx,
-        );
-      },
-    );
+      expect(service.searchFoods).toHaveBeenCalledWith(
+        expect.objectContaining({ query: fdcQuery, dataType: ['Branded', 'Survey (FNDDS)'] }),
+        ctx,
+      );
+    });
 
     it.each(['1234567', '123456789012345', '02114029705 milk', '0211 4029705', '0211402970a'])(
       'keeps the SR Legacy default for %j',
@@ -968,5 +971,236 @@ describe('usdaSearchFoods', () => {
       expect(inputDescription('dataType')).toContain('["Branded", "Survey (FNDDS)"]');
       expect(usdaSearchFoods.description).toContain('8–14 digits');
     });
+  });
+
+  /**
+   * FDC matches `gtinUpc` as the exact stored string, and Branded records store
+   * one GTIN in several digit forms. A bare 12–14-digit code with a valid GS1
+   * check digit goes out as one OR query of its 12-, 13-, and 14-digit forms
+   * (never below 12) and the 12-digit form without its check digit; every
+   * other query goes out as given.
+   */
+  describe('barcode digit forms', () => {
+    /** The query the handler hands the service for `args`. */
+    async function sentQuery(args: Record<string, unknown>): Promise<unknown> {
+      const service = await getServiceMock();
+      const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+      await usdaSearchFoods.handler(usdaSearchFoods.input.parse(args), ctx);
+      return service.searchFoods.mock.calls[0]?.[0]?.query;
+    }
+
+    it.each([
+      [
+        'a 12-digit UPC-A',
+        '044500975932',
+        '044500975932 OR 0044500975932 OR 00044500975932 OR 04450097593',
+      ],
+      [
+        'another UPC-A',
+        '021140297051',
+        '021140297051 OR 0021140297051 OR 00021140297051 OR 02114029705',
+      ],
+      [
+        'a 13-digit code with one leading zero',
+        '0011110044174',
+        '0011110044174 OR 011110044174 OR 00011110044174 OR 01111004417',
+      ],
+      [
+        'a 14-digit code with two leading zeros',
+        '00011110044174',
+        '00011110044174 OR 011110044174 OR 0011110044174 OR 01111004417',
+      ],
+      ['a 13-digit EAN with no leading zero', '4006381333931', '4006381333931 OR 04006381333931'],
+      [
+        'a 12-digit UPC-A with no leading zero',
+        '123456789012',
+        '123456789012 OR 0123456789012 OR 00123456789012 OR 12345678901',
+      ],
+      [
+        'a 13-digit code whose significant digits are 12',
+        '0123456789012',
+        '0123456789012 OR 123456789012 OR 00123456789012 OR 12345678901',
+      ],
+      [
+        'a 14-digit code whose significant digits are 13',
+        '04006381333931',
+        '04006381333931 OR 4006381333931',
+      ],
+      [
+        'a trimmed UPC-A',
+        '  044500975932 ',
+        '044500975932 OR 0044500975932 OR 00044500975932 OR 04450097593',
+      ],
+    ])('expands %s', async (_label, query, expected) => {
+      await expect(sentQuery({ query })).resolves.toBe(expected);
+    });
+
+    it.each([
+      ['an 11-digit code', '02114029705'],
+      ['an 11-digit code whose check digit holds', '02114029700'],
+      ['an 8-digit FNDDS food code', '11111000'],
+      ['an 8-digit code whose check digit holds', '11111009'],
+      ['a 12-digit code whose check digit fails', '044500975933'],
+      ['a 14-digit GTIN with no 12- or 13-digit form', '12345678901231'],
+      ['a 7-digit code', '1234567'],
+      ['a 15-digit code', '123456789012345'],
+      ['a UPC-A with a space in it', '0445 00975932'],
+      ['a UPC-A beside a word', '044500975932 milk'],
+      ['a word query', 'chicken breast raw'],
+    ])('sends %s as given', async (_label, query) => {
+      await expect(sentQuery({ query })).resolves.toBe(query);
+    });
+
+    it('expands under requireAllWords, which keeps an explicit OR', async () => {
+      const service = await getServiceMock();
+      const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+      await usdaSearchFoods.handler(
+        usdaSearchFoods.input.parse({ query: '00011110044174', requireAllWords: true }),
+        ctx,
+      );
+
+      expect(service.searchFoods).toHaveBeenCalledTimes(1);
+      expect(service.searchFoods).toHaveBeenCalledWith(
+        {
+          query: '00011110044174 OR 011110044174 OR 0011110044174 OR 01111004417',
+          dataType: ['Branded', 'Survey (FNDDS)'],
+          pageSize: 10,
+          pageNumber: 1,
+          requireAllWords: true,
+        },
+        ctx,
+      );
+    });
+
+    it('expands beside an explicit dataType, which still decides the sources', async () => {
+      const service = await getServiceMock();
+      const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+      await usdaSearchFoods.handler(
+        usdaSearchFoods.input.parse({ query: '044500975932', dataType: ['Branded'] }),
+        ctx,
+      );
+
+      expect(service.searchFoods).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: '044500975932 OR 0044500975932 OR 00044500975932 OR 04450097593',
+          dataType: ['Branded'],
+        }),
+        ctx,
+      );
+    });
+
+    it('returns the stored gtinUpc of the form that matched', async () => {
+      const service = await getServiceMock();
+      service.searchFoods.mockResolvedValue({
+        totalHits: 1,
+        currentPage: 1,
+        totalPages: 1,
+        foods: [
+          {
+            fdcId: 2739667,
+            description: ' Hillshire Farm Hearty Turkey & Cheddar Wedge',
+            dataType: 'Branded',
+            basisUnit: 'g',
+            gtinUpc: '00044500975932',
+            nutrients: [],
+          },
+        ],
+      });
+
+      const result = await runToolContract(usdaSearchFoods, { query: '044500975932' });
+
+      expect(result.structuredContent).toMatchObject({
+        foods: [{ fdcId: 2739667, gtinUpc: '00044500975932' }],
+      });
+      expect(firstText(result.content)).toContain('**GTIN/UPC:** 00044500975932');
+    });
+
+    /**
+     * A bare code's miss names the caller's query, never the expansion, and
+     * points to a name search: spelling and requireAllWords advice cannot help
+     * a single code.
+     */
+    describe('no_results for a bare code', () => {
+      const BARCODE_ADVICE =
+        'A bare code matches only a record storing it (a Branded GTIN/UPC or a Survey (FNDDS) food code); search by the product\'s name with dataType ["Branded"] instead.';
+
+      it.each([
+        [
+          'an expanded UPC-A',
+          { query: '044500975932' },
+          'No foods matched "044500975932" in Branded, Survey (FNDDS).',
+          `No foods matched "044500975932" in Branded, Survey (FNDDS). ${BARCODE_ADVICE}`,
+        ],
+        [
+          'an 11-digit code under requireAllWords',
+          { query: ' 02114029705 ', requireAllWords: true },
+          'No foods matched "02114029705" in Branded, Survey (FNDDS).',
+          `No foods matched "02114029705" in Branded, Survey (FNDDS). ${BARCODE_ADVICE}`,
+        ],
+        [
+          'a code searched in SR Legacy only',
+          { query: '02114029705', dataType: ['SR Legacy' as const] },
+          'No foods matched "02114029705" in SR Legacy.',
+          `No foods matched "02114029705" in SR Legacy. ${BARCODE_ADVICE}`,
+        ],
+        [
+          'a code with a brandOwner filter',
+          { query: '044500975932', brandOwner: 'Bush' },
+          'No foods matched "044500975932" in Branded with brandOwner "Bush".',
+          `No foods matched "044500975932" in Branded with brandOwner "Bush". A filter without * or ? must match as one phrase: check it against the brandOwner values an unfiltered search returns, or drop it. ${BARCODE_ADVICE}`,
+        ],
+      ])('with %s: message and hint on both surfaces', async (_label, args, message, hint) => {
+        const service = await getServiceMock();
+        service.searchFoods.mockResolvedValue({
+          totalHits: 0,
+          currentPage: 1,
+          totalPages: 0,
+          foods: [],
+        });
+
+        const result = await runToolContract(usdaSearchFoods, args);
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: {
+            message,
+            data: { reason: 'no_results', query: message.split('"')[1], recovery: { hint } },
+          },
+        });
+        const text = allText(result.content);
+        expect(text).toContain(`Error: ${escapeMarkdownInline(message)}`);
+        expect(text).toContain(`Recovery: ${escapeMarkdownInline(hint)}`);
+        expect(text).not.toContain(' OR ');
+        expect(text).not.toContain('check spelling');
+      });
+    });
+
+    it('describes the digit forms on query and gtinUpc', () => {
+      expect(inputDescription('query')).toContain('check digit');
+      const output = JSON.stringify(z.toJSONSchema(usdaSearchFoods.output));
+      expect(output).toMatch(/"gtinUpc":\{[^}]*check digit/);
+    });
+  });
+
+  it('carries the declared retry_deadline_exceeded recovery to both surfaces', async () => {
+    const service = await getServiceMock();
+    service.searchFoods.mockRejectedValue(
+      timeout('FDC request exceeded its 45000ms retry deadline after 3 attempts.', {
+        reason: 'retry_deadline_exceeded',
+      }),
+    );
+
+    const result = await runToolContract(usdaSearchFoods, { query: 'kale' });
+
+    const hint =
+      'Retry the call once; FDC is sometimes slow to build a response, and a later attempt can answer in time.';
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.Timeout,
+        data: { reason: 'retry_deadline_exceeded', recovery: { hint } },
+      },
+    });
+    expect(allText(result.content)).toContain(`Recovery: ${hint}`);
   });
 });

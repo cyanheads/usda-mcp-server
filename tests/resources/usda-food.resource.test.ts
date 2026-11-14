@@ -3,7 +3,7 @@
  * @module tests/resources/usda-food.resource.test
  */
 
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError, timeout } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, type FetchMockHarness } from '@cyanheads/mcp-ts-core/testing';
 import { createWorkerHandler } from '@cyanheads/mcp-ts-core/worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -239,6 +239,33 @@ describe('usdaFoodResource', () => {
     });
   });
 
+  describe('retry_deadline_exceeded', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('carries the declared recovery on the JSON-RPC error', async () => {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockRejectedValue(
+        timeout('FDC request exceeded its 45000ms retry deadline after 3 attempts.', {
+          reason: 'retry_deadline_exceeded',
+        }),
+      );
+
+      const error = await readResourceError('usda://food/171077');
+
+      expect(error).toMatchObject({
+        code: JsonRpcErrorCode.Timeout,
+        data: {
+          reason: 'retry_deadline_exceeded',
+          recovery: {
+            hint: 'Retry the call once; FDC is sometimes slow to build a response, and a later attempt can answer in time.',
+          },
+        },
+      });
+    });
+  });
+
   describe('over the real FdcService', () => {
     beforeEach(async () => {
       vi.stubEnv('USDA_FDC_API_KEY', 'test-key');
@@ -302,6 +329,15 @@ describe('usdaFoodResource', () => {
         portions: [{ description: '0.5 cup', gramWeight: 141, amount: 0.5 }],
       });
       expect(food).not.toHaveProperty('gtinUpc');
+    });
+
+    it("lists portions in FDC's display order, not its array order", async () => {
+      const food = await readResourceJson('usda://food/169733');
+
+      expect(food.portions).toStrictEqual([
+        { description: '1 cup', gramWeight: 38, amount: 1 },
+        { description: '2 oz', gramWeight: 57, amount: 2 },
+      ]);
     });
 
     it('reads FNDDS portions as described and the WWEIA category', async () => {

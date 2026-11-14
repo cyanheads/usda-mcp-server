@@ -87,7 +87,7 @@ function scaledAmount(
 export const usdaGetFood = tool('usda_get_food', {
   title: 'Get USDA Food',
   description:
-    'Get the full nutrient profile for one food by FDC ID. Returns all available nutrients (or a filtered subset via the nutrients[] param) with optional per-portion scaling. Use usda_search_foods to discover FDC IDs. Values are per 100 g (basisUnit "g"), except Branded foods FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent, basis unverified). Provide unit, optionally with quantity, to scale all nutrient values from that basis to that amount (e.g. quantity=200, unit="g" → per-200g values); a mass unit is applied to an ml or label-unit basis without conversion, and a notice says so. quantity defaults to 100 for g, oz, lb, and kg and to 1 for serving. Serving uses the first valid portion, or a positive finite Branded label size in g/GRM/GM (case-insensitive) when no portion exists; quantity multiplies that weight. A label in any other unit sets the basis rather than a serving weight, so it requires an explicit mass-unit request. quantity without unit is rejected. Narrow nutrients[] to specific IDs to reduce response size for focused queries.',
+    'Get the full nutrient profile for one food by FDC ID. Returns all available nutrients (or a filtered subset via the nutrients[] param) with optional per-portion scaling. Use usda_search_foods to discover FDC IDs. Values are per 100 g (basisUnit "g"), except Branded foods FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent, basis unverified). Provide unit, optionally with quantity, to scale all nutrient values from that basis to that amount (e.g. quantity=200, unit="g" → per-200g values); a mass unit is applied to an ml or label-unit basis without conversion, and a notice says so. quantity defaults to 100 for g, oz, lb, and kg and to 1 for serving. Serving uses the valid portion FDC displays first (lowest sequenceNumber), or a positive finite Branded label size in g/GRM/GM (case-insensitive) when no portion exists; quantity multiplies that weight. A label in any other unit sets the basis rather than a serving weight, so it requires an explicit mass-unit request. quantity without unit is rejected. Narrow nutrients[] to specific IDs to reduce response size for focused queries.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcId: z
@@ -112,7 +112,7 @@ export const usdaGetFood = tool('usda_get_food', {
       .enum(['g', 'oz', 'lb', 'kg', 'serving'])
       .optional()
       .describe(
-        'Unit for quantity. "serving" uses the first valid portion weight, or a Branded label size in g/GRM/GM (case-insensitive) when no portion exists, multiplied by quantity. Required when quantity is provided. Given alone, scales to 100 g, oz, lb, or kg, or to 1 serving.',
+        'Unit for quantity. "serving" uses the weight of the valid portion FDC displays first (lowest sequenceNumber), or a Branded label size in g/GRM/GM (case-insensitive) when no portion exists, multiplied by quantity. Required when quantity is provided. Given alone, scales to 100 g, oz, lb, or kg, or to 1 serving.',
       ),
   }),
   output: z.object({
@@ -173,7 +173,7 @@ export const usdaGetFood = tool('usda_get_food', {
       })
       .optional()
       .describe(
-        'First available portion definition, or a Branded gram-label serving identified in its description.',
+        'The portion one serving weighs: the first of allPortions (the one FDC displays first), or, when the food has no portion, a Branded gram-label serving identified in its description.',
       ),
     allPortions: z
       .array(
@@ -193,7 +193,9 @@ export const usdaGetFood = tool('usda_get_food', {
           .describe('A named portion for this food.'),
       )
       .optional()
-      .describe('All named portions for this food, in FDC order.'),
+      .describe(
+        "All named portions for this food, in FDC's display order: ascending sequenceNumber, ties as FDC lists them, unnumbered portions last.",
+      ),
     scaledTo: z
       .object({
         quantity: z
@@ -280,6 +282,14 @@ export const usdaGetFood = tool('usda_get_food', {
       when: 'unit="serving" was requested but the food has no valid portion or supported Branded gram-label serving.',
       recovery: 'Use a gram-based unit (g, oz, lb, kg) instead of serving for this food.',
       severity: 'notice',
+    },
+    {
+      reason: 'retry_deadline_exceeded',
+      code: JsonRpcErrorCode.Timeout,
+      when: "FDC did not answer within the call's 45-second budget, across every attempt.",
+      recovery:
+        'Retry the call once; FDC is sometimes slow to build a response, and a later attempt can answer in time.',
+      thrownBy: 'service',
     },
   ],
 
@@ -428,9 +438,9 @@ export const usdaGetFood = tool('usda_get_food', {
     }
 
     /**
-     * servingInfo is the first portion whenever FDC sent portions, which
-     * allPortions then lists; without them it can only be the gram label,
-     * whose description already carries every label field.
+     * servingInfo is the first of allPortions whenever FDC sent portions;
+     * without them it can only be the gram label, whose description already
+     * carries every label field.
      */
     const servingIsLabel = result.servingInfo != null && result.allPortions == null;
     const labelSize = [result.servingSize, result.servingSizeUnit]

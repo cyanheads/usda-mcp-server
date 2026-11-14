@@ -14,31 +14,71 @@ import type { FdcDataType } from '@/services/fdc/types.js';
 const WINDOW_TEXT = FDC_RESULT_WINDOW.toLocaleString('en-US');
 
 /**
+ * Whether a trimmed query is 8–14 digits alone: a UPC/GTIN barcode (a Branded
+ * `gtinUpc`) or an 8-digit Survey (FNDDS) food code. The length gate keeps the
+ * digit test off long queries.
+ */
+function isBareCode(query: string): boolean {
+  return query.length >= 8 && query.length <= 14 && /^\d+$/.test(query);
+}
+
+/**
  * The data sources a search without `dataType` covers. Only Branded records
- * carry a brandOwner, so a brand search goes there. A query of 8–14 digits
- * alone is a UPC/GTIN barcode (a Branded `gtinUpc`) or an 8-digit Survey
- * (FNDDS) food code. Anything else searches SR Legacy.
+ * carry a brandOwner, so a brand search goes there; a bare code goes to the
+ * two sources that store codes. Anything else searches SR Legacy.
  */
 function defaultDataType(query: string, brandOwner: string | undefined): FdcDataType[] {
   if (brandOwner) return ['Branded'];
-  // The length gate keeps the digit test off long queries.
-  if (query.length >= 8 && query.length <= 14 && /^\d+$/.test(query)) {
-    return ['Branded', 'Survey (FNDDS)'];
-  }
+  if (isBareCode(query)) return ['Branded', 'Survey (FNDDS)'];
   return ['SR Legacy'];
+}
+
+/**
+ * GS1's mod-10 check: weights 3, 1, 3, … from the digit left of the check
+ * digit. Right-aligned, so leading zeros never change the result.
+ */
+function hasValidCheckDigit(digits: string): boolean {
+  let sum = 0;
+  for (let i = digits.length - 2, weight = 3; i >= 0; i--, weight = 4 - weight) {
+    sum += Number(digits[i]) * weight;
+  }
+  return (10 - (sum % 10)) % 10 === Number(digits[digits.length - 1]);
+}
+
+/**
+ * The FDC query for a trimmed search query. FDC matches `gtinUpc` as the exact
+ * stored string, and Branded records store one GTIN as 12, 13, or 14 digits
+ * (zero-padded) or as the 12-digit UPC-A without its check digit. So a bare
+ * 12–14-digit code with a valid check digit goes out as one OR of those forms —
+ * the code as given, then its other 12-, 13-, and 14-digit forms (leading zeros
+ * added or dropped, never below 12 digits), then the 12-digit form less its
+ * check digit when one exists. Every other query, 8–11-digit codes and codes
+ * that fail the check digit included, goes out as given.
+ */
+function barcodeQuery(query: string): string {
+  if (!isBareCode(query) || query.length < 12 || !hasValidCheckDigit(query)) return query;
+  const significant = query.replace(/^0+/, '');
+  const forms = [query];
+  for (const length of [12, 13, 14]) {
+    if (length !== query.length && length >= significant.length) {
+      forms.push(significant.padStart(length, '0'));
+    }
+  }
+  if (significant.length <= 12) forms.push(significant.padStart(12, '0').slice(0, 11));
+  return forms.join(' OR ');
 }
 
 export const usdaSearchFoods = tool('usda_search_foods', {
   title: 'Search USDA Foods',
   description:
-    'Search USDA FoodData Central foods by keyword. Returns matching foods with FDC IDs and available preview nutrients: protein (1003), fat (1004), carbohydrate (1005), fiber (1079), and energy (1008, 1062, 2047, 2048), preserving distinct energy estimates. Missing nutrients are omitted. Use the returned fdcId with usda_get_food for other nutrients or the full profile, or usda_compare_foods for side-by-side comparisons. When dataType is omitted, defaults to SR Legacy (common whole foods with complete profiles), to Branded when brandOwner is set (only Branded records carry one), or to Branded and Survey (FNDDS) when the query is 8–14 digits alone (a UPC/GTIN barcode or an FNDDS food code). Set dataType to ["Branded"] for packaged products. Pass brandOwner (e.g. "General Mills") to narrow branded results.',
+    'Search USDA FoodData Central foods by keyword. Returns matching foods with FDC IDs and available preview nutrients: protein (1003), fat (1004), carbohydrate (1005), fiber (1079), and energy (1008, 1062, 2047, 2048), preserving distinct energy estimates. Missing nutrients are omitted. Use the returned fdcId with usda_get_food for other nutrients or the full profile, or usda_compare_foods for side-by-side comparisons. When dataType is omitted, defaults to SR Legacy (common whole foods with complete profiles), to Branded when brandOwner is set (only Branded records carry one), or to Branded and Survey (FNDDS) when the query is 8–14 digits alone (a UPC/GTIN barcode or an FNDDS food code). A 12–14-digit barcode with a valid check digit also matches the other digit forms FDC stores it in. Set dataType to ["Branded"] for packaged products. Pass brandOwner (e.g. "General Mills") to narrow branded results.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   input: z.object({
     query: z
       .string()
       .min(1)
       .describe(
-        'Search terms — food name, ingredient, or UPC/GTIN code. Examples: "chicken breast raw", "banana", "02114029705". A food matching any one unqualified word counts, so a multi-word query also returns foods holding only some of its words; set requireAllWords, or prefix each word with +, to require them all. A query of 8–14 digits alone matches a Branded UPC/GTIN code exactly as FDC stores it, leading zeros included, or an 8-digit Survey (FNDDS) food code. FDC reads Lucene syntax: "quoted phrases", +required and -excluded terms, AND/OR/NOT, wildcards (chick*), fuzzy matches (beeef~), boosts (beef^5), grouping parentheses, field:value, regex terms (/chick.*/), and ranges ([a TO c], {a TO c}). Any other slash, bracket, or brace (1/8, w/o, beef [raw]), any unpaired parenthesis, and every double quote when the query holds an odd number of them are sent as literal characters.',
+        'Search terms — food name, ingredient, or UPC/GTIN code. Examples: "chicken breast raw", "banana", "02114029705". A food matching any one unqualified word counts, so a multi-word query also returns foods holding only some of its words; set requireAllWords, or prefix each word with +, to require them all. A query of 8–14 digits alone matches a Branded UPC/GTIN code or an 8-digit Survey (FNDDS) food code. A 12-, 13-, or 14-digit code with a valid GTIN check digit (a printed UPC-A or EAN-13) also matches the other digit forms FDC stores that GTIN in: leading zeros added or dropped down to 12 digits, and the 12-digit form without its check digit. Any other code matches only as FDC stores it, leading zeros included. FDC reads Lucene syntax: "quoted phrases", +required and -excluded terms, AND/OR/NOT, wildcards (chick*), fuzzy matches (beeef~), boosts (beef^5), grouping parentheses, field:value, regex terms (/chick.*/), and ranges ([a TO c], {a TO c}). Any other slash, bracket, or brace (1/8, w/o, beef [raw]), any unpaired parenthesis, and every double quote when the query holds an odd number of them are sent as literal characters.',
       ),
     requireAllWords: z
       .boolean()
@@ -130,7 +170,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
               .string()
               .optional()
               .describe(
-                'UPC/GTIN barcode as FDC stores it, leading zeros kept (e.g. "02114029705"). Branded only; a query of exactly these digits finds the product again.',
+                'UPC/GTIN barcode as FDC stores it, leading zeros kept (e.g. "02114029705"). After a 12–14-digit query it can differ from the query in leading zeros or a missing check digit, naming the stored form that matched. Branded only; a query of exactly these digits finds the product again.',
               ),
             servingSize: z
               .number()
@@ -219,6 +259,14 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       recovery: `Request a page whose pageSize × pageNumber is at most ${WINDOW_TEXT}, or narrow the query, dataType, brandOwner, or foodCategory to bring the foods you need inside the first ${WINDOW_TEXT} results.`,
       severity: 'notice',
     },
+    {
+      reason: 'retry_deadline_exceeded',
+      code: JsonRpcErrorCode.Timeout,
+      when: "FDC did not answer within the call's 45-second budget, across every attempt.",
+      recovery:
+        'Retry the call once; FDC is sometimes slow to build a response, and a later attempt can answer in time.',
+      thrownBy: 'service',
+    },
   ],
 
   async handler(input, ctx) {
@@ -251,7 +299,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
 
     const result = await getFdcService().searchFoods(
       {
-        query: trimmedQuery,
+        query: barcodeQuery(trimmedQuery),
         dataType,
         pageSize: input.pageSize,
         pageNumber: pastWindow ? 1 : input.pageNumber,
@@ -265,9 +313,13 @@ export const usdaSearchFoods = tool('usda_search_foods', {
     const exhaustedPage = result.totalHits > 0 && input.pageNumber > result.totalPages;
     if (result.foods.length === 0 && !exhaustedPage) {
       const dtLabel = dataType.join(', ');
-      const widen = dataType.includes('Branded')
-        ? 'Try a simpler query or check spelling.'
-        : 'Try a simpler query, check spelling, or add "Branded" to dataType.';
+      // A bare code is one token: a simpler query or dropping requireAllWords cannot widen it; a name search can.
+      const bareCode = isBareCode(trimmedQuery);
+      const widen = bareCode
+        ? 'A bare code matches only a record storing it (a Branded GTIN/UPC or a Survey (FNDDS) food code); search by the product\'s name with dataType ["Branded"] instead.'
+        : dataType.includes('Branded')
+          ? 'Try a simpler query or check spelling.'
+          : 'Try a simpler query, check spelling, or add "Branded" to dataType.';
       // A filter can empty the result on its own, so the message and hint name every one sent.
       const filters: Array<[field: string, value: string]> = [];
       if (brandOwner) filters.push(['brandOwner', brandOwner]);
@@ -275,10 +327,12 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       const withFilters = filters.length
         ? ` with ${filters.map(([field, value]) => `${field} "${value}"`).join(' and ')}`
         : '';
+      // The caller's query, never the barcode expansion sent for it.
       const message = `No foods matched "${trimmedQuery}" in ${dtLabel}${withFilters}.`;
-      const lead = input.requireAllWords
-        ? 'Retry without requireAllWords so a food matching any one query word counts.'
-        : message;
+      const lead =
+        input.requireAllWords && !bareCode
+          ? 'Retry without requireAllWords so a food matching any one query word counts.'
+          : message;
       const phraseFields = filters
         .filter(([, value]) => !isWildcardFilter(value))
         .map(([field]) => field);

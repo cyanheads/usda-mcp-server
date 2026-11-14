@@ -4,15 +4,17 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, timeout } from '@cyanheads/mcp-ts-core/errors';
 import {
+  createFetchMock,
   createMockContext,
+  type FetchMockHarness,
   type MockContextLogger,
   runToolContract,
 } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaGetFoods } from '@/mcp-server/tools/definitions/usda-get-foods.tool.js';
-import { createFdcFake, RAW_COOKIE, RAW_MILK } from '../fdc-fake.js';
+import { createFdcFake, RAW_COOKIE, RAW_KALE, RAW_MILK } from '../fdc-fake.js';
 import { allText, firstText } from '../helpers.js';
 
 const { format } = usdaGetFoods;
@@ -83,7 +85,7 @@ const foodFor = (fdcId: number) => ({
 describe('usdaGetFoods', () => {
   beforeEach(async () => {
     const service = await getServiceMock();
-    service.getFoodsBatch.mockResolvedValue({ foods: MOCK_FOODS, failed: [] });
+    service.getFoodsBatch.mockResolvedValue({ foods: MOCK_FOODS, failed: [], deferredIds: [] });
   });
 
   it('schema rejects non-positive nutrient IDs', () => {
@@ -140,8 +142,8 @@ describe('usdaGetFoods', () => {
       { fdcId: 999_998, error: 'FDC ID 999998 not found or returned no data.' },
       { fdcId: 999_999, error: 'FDC ID 999999 not found or returned no data.' },
     ];
-    service.getFoodsBatch.mockResolvedValue({ foods: [], failed });
-    const ctx = createMockContext();
+    service.getFoodsBatch.mockResolvedValue({ foods: [], failed, deferredIds: [] });
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const input = usdaGetFoods.input.parse({ fdcIds: [999_998, 999_999] });
     const result = await usdaGetFoods.handler(input, ctx);
 
@@ -158,7 +160,7 @@ describe('usdaGetFoods', () => {
   });
 
   it('returns nutrient profiles for all valid fdcIds', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079] });
     const result = await usdaGetFoods.handler(input, ctx);
 
@@ -173,8 +175,9 @@ describe('usdaGetFoods', () => {
     service.getFoodsBatch.mockResolvedValue({
       foods: [MOCK_FOODS[0]],
       failed: [{ fdcId: 999999, error: 'FDC ID 999999 not found or returned no data.' }],
+      deferredIds: [],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 999999] });
     const result = await usdaGetFoods.handler(input, ctx);
 
@@ -185,7 +188,7 @@ describe('usdaGetFoods', () => {
 
   it('passes nutrient filter to the service', async () => {
     const service = await getServiceMock();
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079], nutrients: [1003, 1008] });
     await usdaGetFoods.handler(input, ctx);
 
@@ -194,7 +197,7 @@ describe('usdaGetFoods', () => {
 
   it('passes undefined nutrient filter when nutrients are omitted', async () => {
     const service = await getServiceMock();
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079] });
     await usdaGetFoods.handler(input, ctx);
 
@@ -202,7 +205,7 @@ describe('usdaGetFoods', () => {
   });
 
   it('normalizes output to the expected shape', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079] });
     const result = await usdaGetFoods.handler(input, ctx);
 
@@ -235,8 +238,9 @@ describe('usdaGetFoods', () => {
         },
       ],
       failed: [],
+      deferredIds: [],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079] });
     const result = await usdaGetFoods.handler(input, ctx);
 
@@ -250,8 +254,9 @@ describe('usdaGetFoods', () => {
         { fdcId: 1, description: 'Sparse', dataType: 'SR Legacy', nutrients: [], portions: [] },
       ],
       failed: [],
+      deferredIds: [],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const input = usdaGetFoods.input.parse({ fdcIds: [1, 2] });
     const result = await usdaGetFoods.handler(input, ctx);
     expect(result.foods).toHaveLength(1);
@@ -308,6 +313,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
     service.getFoodsBatch.mockImplementation(async (fdcIds: number[]) => ({
       foods: fdcIds.map(foodFor),
       failed: [],
+      deferredIds: [],
     }));
   });
 
@@ -323,7 +329,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
     'leaves %i distinct IDs alone: one fetch, no deferredIds, notice, log line, or count',
     async (count) => {
       const service = await getServiceMock();
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: usdaGetFoods.errors });
       const result = await usdaGetFoods.handler(
         usdaGetFoods.input.parse({ fdcIds: ids(count) }),
         ctx,
@@ -343,7 +349,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
 
   it('fetches the first 20 of 21 distinct IDs and defers the 21st', async () => {
     const service = await getServiceMock();
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const result = await usdaGetFoods.handler(usdaGetFoods.input.parse({ fdcIds: ids(21) }), ctx);
 
     expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith(ids(20), undefined, ctx);
@@ -357,10 +363,11 @@ describe('usdaGetFoods batch size and deferredIds', () => {
     service.getFoodsBatch.mockImplementation(async (fdcIds: number[]) => ({
       foods: [],
       failed: fdcIds.map((fdcId) => ({ fdcId, error: `FDC ID ${fdcId} not found.` })),
+      deferredIds: [],
     }));
     const result = await usdaGetFoods.handler(
       usdaGetFoods.input.parse({ fdcIds: ids(22) }),
-      createMockContext(),
+      createMockContext({ errors: usdaGetFoods.errors }),
     );
 
     expect(result.failed.map((f) => f.fdcId)).toEqual(ids(20));
@@ -368,7 +375,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
   });
 
   it('logs one notice with the counts and adds 1 to the deferral counter', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     await usdaGetFoods.handler(usdaGetFoods.input.parse({ fdcIds: [7, 7, ...ids(20, 100)] }), ctx);
 
     const notices = (ctx.log as MockContextLogger).calls.filter((c) => c.level === 'notice');
@@ -407,7 +414,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
 
   it('drops repeats before splitting, keeping first occurrences in request order', async () => {
     const service = await getServiceMock();
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     // 25 entries holding 20 distinct IDs
     const fdcIds = [3, ...ids(20), 5, 1, 20, 3];
     const result = await usdaGetFoods.handler(usdaGetFoods.input.parse({ fdcIds }), ctx);
@@ -424,7 +431,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
 
   it('sends one occurrence of a repeated ID', async () => {
     const service = await getServiceMock();
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const result = await usdaGetFoods.handler(
       usdaGetFoods.input.parse({ fdcIds: [171077, 171077] }),
       ctx,
@@ -432,6 +439,93 @@ describe('usdaGetFoods batch size and deferredIds', () => {
 
     expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith([171077], undefined, ctx);
     expect(result.foods.map((f) => f.fdcId)).toEqual([171077]);
+  });
+
+  /** The service defers the fetched IDs FDC left unanswered; the tool lists them ahead of those past 20. */
+  describe('IDs FDC left unanswered', () => {
+    const RECOVERY =
+      'Retry the call once. FDC builds some records slowly (Foundation foods most often); if it fails again, request fewer foods per call or fetch them one at a time with usda_get_food.';
+
+    /** The service answers every fetched ID except `unanswered`, which it defers. */
+    const deferring = async (unanswered: number[]) => {
+      const service = await getServiceMock();
+      service.getFoodsBatch.mockImplementation(async (fdcIds: number[]) => ({
+        foods: fdcIds.filter((id) => !unanswered.includes(id)).map(foodFor),
+        failed: [],
+        deferredIds: unanswered,
+      }));
+    };
+
+    it('lists them in deferredIds and names them in the notice on both surfaces', async () => {
+      await deferring([2, 4]);
+      const result = await runToolContract(usdaGetFoods, { fdcIds: ids(5) });
+      const notice =
+        "2 of the 5 fetched FDC IDs (2, 4) went unanswered: FDC did not return them before this call's deadline or kept failing; call usda_get_foods again with the 2 IDs in deferredIds, or fetch them one at a time with usda_get_food.";
+
+      expect(result.structuredContent).toMatchObject({
+        foods: [{ fdcId: 1 }, { fdcId: 3 }, { fdcId: 5 }],
+        failed: [],
+        deferredIds: [2, 4],
+        notice,
+      });
+      const text = allText(result.content);
+      expect(text).toContain(`> ${notice}`);
+      expect(text).toContain('**Deferred (not fetched):** 2, 4');
+      // The counter tracks deferrals past the batch size only.
+      expect(deferrals.add).not.toHaveBeenCalled();
+    });
+
+    it('routes a single unanswered ID to usda_get_food', async () => {
+      await deferring([2]);
+      const result = await runToolContract(usdaGetFoods, { fdcIds: ids(3) });
+
+      expect(result.structuredContent).toMatchObject({
+        deferredIds: [2],
+        notice:
+          "1 of the 3 fetched FDC IDs (2) went unanswered: FDC did not return it before this call's deadline or kept failing; fetch the 1 ID in deferredIds with usda_get_food (fdcId 2).",
+      });
+    });
+
+    it('puts them ahead of the IDs past the first 20', async () => {
+      await deferring([5]);
+      const ctx = createMockContext({ errors: usdaGetFoods.errors });
+      const result = await usdaGetFoods.handler(usdaGetFoods.input.parse({ fdcIds: ids(22) }), ctx);
+
+      expect(result.deferredIds).toEqual([5, 21, 22]);
+      expect(result.foods).toHaveLength(19);
+      expect(
+        (ctx.log as MockContextLogger).calls.find((c) => c.level === 'notice')?.data,
+      ).toMatchObject({
+        deferred: 2,
+      });
+      expect(deferrals.add).toHaveBeenCalledExactlyOnceWith(1);
+      const contract = await runToolContract(usdaGetFoods, { fdcIds: ids(22) });
+      expect(contract.structuredContent).toMatchObject({
+        notice:
+          "Fetched the first 20 of 22 distinct FDC IDs, and 1 of those (5) went unanswered: FDC did not return it before this call's deadline or kept failing; call usda_get_foods again with the 3 IDs in deferredIds, or fetch the unanswered ones one at a time with usda_get_food.",
+      });
+    });
+
+    it('carries the declared recovery hint on both surfaces when no ID was answered', async () => {
+      const service = await getServiceMock();
+      service.getFoodsBatch.mockRejectedValue(
+        timeout('FDC /foods request exceeded its 45000ms retry deadline after 3 attempts.', {
+          reason: 'retry_deadline_exceeded',
+          deadlineMs: 45_000,
+          retryAttempts: 3,
+        }),
+      );
+      const result = await runToolContract(usdaGetFoods, { fdcIds: ids(2) });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.Timeout,
+          data: { reason: 'retry_deadline_exceeded', recovery: { hint: RECOVERY } },
+        },
+      });
+      expect(allText(result.content)).toContain(RECOVERY);
+    });
   });
 });
 
@@ -443,6 +537,7 @@ describe('usdaGetFoods basis and missingNutrients', () => {
     service.getFoodsBatch.mockResolvedValue({
       foods,
       failed: [{ fdcId: 5, error: 'FDC ID 5 not found or returned no data.' }],
+      deferredIds: [],
     });
     return runToolContract(usdaGetFoods, args);
   };
@@ -637,6 +732,100 @@ describe('usdaGetFoods over the real FdcService', () => {
     expect(result.structuredContent).toMatchObject({ foods: [{ fdcId: 168421 }], failed: [] });
     expect((result.structuredContent as { foods: object[] }).foods).toHaveLength(1);
     expect(await http.calls[0]?.request.clone().json()).toEqual({ fdcIds: [168421] });
+  });
+
+  /** A batch attempt that runs out of time splits into one request per ID under the call's 45 s budget. */
+  describe('when the batch attempt runs out of time', () => {
+    let upstream: FetchMockHarness;
+    /** The `fdcIds` of every `/foods` request, in the order they reached the upstream. */
+    let sent: number[][];
+
+    /** Settles only when the request aborts. */
+    const stall = (request: Request) =>
+      new Promise<Response>((_resolve, reject) => {
+        request.signal.addEventListener('abort', () => reject(request.signal.reason), {
+          once: true,
+        });
+      });
+
+    /** Multi-ID batches stall; a single ID answers after 1 s, unless it is in `stalled`. */
+    function serve(stalled: number[]) {
+      upstream = createFetchMock([
+        {
+          method: 'POST',
+          match: (request) => new URL(request.url).pathname === '/fdc/v1/foods',
+          respond: async (request) => {
+            const { fdcIds } = (await request.clone().json()) as { fdcIds: number[] };
+            sent.push(fdcIds);
+            const [id = 0] = fdcIds;
+            if (fdcIds.length > 1 || stalled.includes(id)) return stall(request);
+            return new Promise<Response>((resolve) =>
+              setTimeout(
+                () =>
+                  resolve(Response.json([{ ...RAW_KALE, fdcId: id, description: `Food ${id}` }])),
+                1_000,
+              ),
+            );
+          },
+        },
+      ]);
+      upstream.install();
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      sent = [];
+    });
+
+    afterEach(async () => {
+      // Run every ladder past its deadline so the process-wide refetch slots are free for the next test.
+      await vi.advanceTimersByTimeAsync(90_000);
+      upstream.restore();
+      vi.useRealTimers();
+    });
+
+    it('settles at the deadline with the unanswered ID ahead of the 21st', async () => {
+      serve([7]);
+      const pending = runToolContract(usdaGetFoods, { fdcIds: ids(21), nutrients: [1003] });
+
+      await vi.advanceTimersByTimeAsync(45_000);
+      const result = await pending;
+
+      const content = result.structuredContent as { foods: Array<{ fdcId: number }> };
+      expect(content.foods.map((f) => f.fdcId)).toEqual(ids(20).filter((id) => id !== 7));
+      expect(result.structuredContent).toMatchObject({
+        failed: [],
+        deferredIds: [7, 21],
+        notice:
+          "Fetched the first 20 of 21 distinct FDC IDs, and 1 of those (7) went unanswered: FDC did not return it before this call's deadline or kept failing; call usda_get_foods again with the 2 IDs in deferredIds, or fetch the unanswered ones one at a time with usda_get_food.",
+      });
+      expect(allText(result.content)).toContain('**Deferred (not fetched):** 7, 21');
+      // One batch, then one request per fetched ID; the 21st never reached FDC.
+      expect(sent).toEqual([ids(20), ...ids(20).map((id) => [id])]);
+    });
+
+    it('settles as RequestCancelled with the caller’s reason when the caller aborts during the split', async () => {
+      serve(ids(20, 3));
+      const controller = new AbortController();
+      const pending = runToolContract(
+        usdaGetFoods,
+        { fdcIds: ids(14) },
+        { context: { signal: controller.signal } },
+      );
+
+      // The split starts at 15 s; IDs 1 and 2 answer at 16 s, the rest stall.
+      await vi.advanceTimersByTimeAsync(20_000);
+      const sentBeforeAbort = sent.length;
+      controller.abort('caller went away');
+      await vi.advanceTimersByTimeAsync(60_000);
+      const result = await pending;
+
+      expect(result.structuredContent).toEqual({
+        error: { code: JsonRpcErrorCode.RequestCancelled, message: 'caller went away' },
+      });
+      expect(firstText(result.content)).toBe('Error: caller went away');
+      expect(sent).toHaveLength(sentBeforeAbort);
+    });
   });
 });
 

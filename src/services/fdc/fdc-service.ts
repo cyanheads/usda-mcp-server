@@ -8,9 +8,15 @@ import {
   JsonRpcErrorCode,
   McpError,
   serviceUnavailable,
+  timeout,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import {
+  createPacer,
+  defaultIsTransient,
+  fetchWithTimeout,
+  withRetry,
+} from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import { basisUnitFor } from './basis.js';
 import type {
@@ -27,8 +33,13 @@ import type {
 } from './types.js';
 
 const BASE_URL = 'https://api.nal.usda.gov/fdc/v1';
+/** How long one attempt of a search page or a multi-ID `/foods` batch may run. */
 const TIMEOUT_MS = 15_000;
-/** Total budget for one FDC call across every attempt, backoff, and Retry-After. */
+/**
+ * One tool call's budget across every FDC request it makes — each attempt,
+ * backoff, honored Retry-After, and per-ID refetch — so its typed error lands
+ * before a 60 s client timeout does.
+ */
 const DEADLINE_MS = 45_000;
 /** Search preview only; distinct energy estimates retain their original identities. */
 const SEARCH_NUTRIENT_IDS = new Set([1003, 1004, 1005, 1079, 1008, 1062, 2047, 2048]);
@@ -114,6 +125,18 @@ function normalizePortion(raw: RawFoodPortion): FoodPortion | null {
 }
 
 /**
+ * FDC's display order for portions, which arrive in no fixed order: ascending
+ * `sequenceNumber`, which FDC's data dictionary defines as the order a portion
+ * is displayed in, with unnumbered portions after the numbered ones. Equal keys
+ * compare 0, so the stable sort keeps FDC's array order for ties.
+ */
+function bySequence(a: RawFoodPortion, b: RawFoodPortion): number {
+  const x = a.sequenceNumber ?? Number.POSITIVE_INFINITY;
+  const y = b.sequenceNumber ?? Number.POSITIVE_INFINITY;
+  return x === y ? 0 : x < y ? -1 : 1;
+}
+
+/**
  * FDC files a record's category under a different field per data type: SR
  * Legacy and Foundation send `foodCategory`, Branded `brandedFoodCategory`,
  * and Survey (FNDDS) `wweiaFoodCategory`. The first non-blank one, trimmed.
@@ -170,7 +193,9 @@ function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): Foo
   const reported = new Set(nutrients.map((n) => n.id));
   const missingNutrients = requested ? [...requested].filter((id) => !reported.has(id)) : [];
 
+  // Every consumer (servingInfo, allPortions, serving scaling, the resource) reads this order.
   const portions = (raw.foodPortions ?? [])
+    .toSorted(bySequence)
     .map(normalizePortion)
     .filter((p): p is FoodPortion => p !== null);
 
@@ -371,17 +396,85 @@ export function isWildcardFilter(value: string): boolean {
 // ---- Request helper ----
 
 /**
- * One FDC call, retried as a single ladder: `TIMEOUT_MS` per attempt, up to 3
- * retries with exponential backoff, all inside a `DEADLINE_MS` wall-clock
- * budget that also covers every honored `Retry-After`. Every tool and resource
- * makes exactly one call, so the budget bounds the whole tool call and its
- * typed error lands before a 60 s client timeout does. Both POST endpoints are
- * reads, so retrying them is safe.
+ * One tool call's FDC budget, shared by every request the call makes: one
+ * {@link DEADLINE_MS} clock, and what the call's attempts have seen so far.
+ */
+interface FdcBudget {
+  /** Upstream requests the call has sent, retries included. */
+  attempts: number;
+  /** Epoch ms when the budget runs out. */
+  readonly deadlineAt: number;
+  /**
+   * The 429 of the call's latest completed attempt, cleared by a completed
+   * attempt that failed any other way. A deadline's expiry carries the cut-off
+   * attempt as its `cause`, which never reaches the wire, so a call ending in
+   * slow 429s would otherwise read as an outage.
+   */
+  lastRateLimit: McpError | undefined;
+}
+
+function startBudget(): FdcBudget {
+  return { deadlineAt: Date.now() + DEADLINE_MS, attempts: 0, lastRateLimit: undefined };
+}
+
+/** `withRetry`'s expiry: a ladder that ran out of budget. */
+function isDeadlineExpiry(error: unknown): boolean {
+  return error instanceof McpError && error.data?.reason === 'retry_deadline_exceeded';
+}
+
+/**
+ * What a call reports when its budget ran out: the latest completed attempt's
+ * 429 when it was one, since "wait and call again" is then the caller's real
+ * next move; any other error unchanged.
+ */
+function reportDeadline(budget: FdcBudget, error: unknown): unknown {
+  return budget.lastRateLimit && isDeadlineExpiry(error) ? budget.lastRateLimit : error;
+}
+
+/**
+ * A failure the ladder retries and a later call can clear — a 5xx, a 429, a
+ * network error, an attempt timeout, or the deadline's expiry: every `McpError`
+ * {@link defaultIsTransient} accepts. A thrown non-`McpError` is a bug, not
+ * slowness, and a body FDC should never send carries `retryable: false`.
+ */
+function isTransientFailure(error: unknown): boolean {
+  return error instanceof McpError && defaultIsTransient(error);
+}
+
+/**
+ * An attempt cut at {@link TIMEOUT_MS} by `fetchWithTimeout`'s own timer —
+ * neither the deadline (`FetchSignalTimeout`) nor the caller.
+ */
+function isAttemptTimeout(error: unknown): boolean {
+  return (
+    error instanceof McpError &&
+    error.code === JsonRpcErrorCode.Timeout &&
+    error.data?.errorSource === 'FetchTimeout'
+  );
+}
+
+/**
+ * One FDC request, retried as a single ladder: up to 3 retries with
+ * exponential backoff inside what remains of the call's budget, which also
+ * covers every honored `Retry-After`. `request` sets how long one attempt may
+ * run:
+ *
+ * - omitted — a search page: each attempt is cut at {@link TIMEOUT_MS}, and a
+ *   cut attempt is retried.
+ * - `'batch'` — several IDs from `/foods`: each attempt is cut at `TIMEOUT_MS`,
+ *   and a cut attempt is thrown at once rather than retried, for the caller to
+ *   split per ID ({@link fetchEachId}). FDC builds the whole response before
+ *   sending a byte, so a retry would only start the same wait over.
+ * - `'record'` — one food: an attempt runs until the call's deadline. One
+ *   record can take longer than `TIMEOUT_MS` to build, and retrying it only
+ *   restarts the build.
+ *
+ * Fast transient failures (5xx, 429, network) retry under every kind. Both
+ * POST endpoints are reads, so retrying them is safe.
  *
  * @throws `Timeout` with `data.reason: 'retry_deadline_exceeded'` when the
- *   budget runs out — or that attempt's `RateLimited` error when the last
- *   attempt to complete before the cut-off was a 429, since "wait and call
- *   again" is then the caller's real next move.
+ *   budget runs out. A request given no `budget` is the whole call and reports
+ *   that through {@link reportDeadline}; a shared budget's owner reports it.
  */
 async function fetchFdc<T>(
   path: string,
@@ -395,23 +488,24 @@ async function fetchFdc<T>(
      * is unchanged, so every declared error contract still behaves identically.
      */
     expectedStatuses?: number[];
+    request?: 'batch' | 'record';
+    /** The call's budget when it makes more than this one request. */
+    budget?: FdcBudget;
   },
 ): Promise<T> {
+  const budget = options.budget ?? startBudget();
   const apiKey = getServerConfig().fdcApiKey;
   const url = new URL(`${BASE_URL}${path}`);
-  /**
-   * The deadline's expiry carries the cut-off attempt as its `cause`, which
-   * never reaches the wire — so a ladder ending in slow 429s would read as an
-   * outage. Holds the latest completed attempt's 429, cleared by any other outcome.
-   */
-  let lastRateLimit: McpError | undefined;
+  // A record's attempt ends when the deadline clock fires, which is never later than this.
+  const attemptMs = options.request === 'record' ? DEADLINE_MS : TIMEOUT_MS;
 
   try {
     return await withRetry(
       async ({ signal }) => {
+        budget.attempts++;
         try {
           // fetchWithTimeout throws a status-mapped McpError on every non-2xx.
-          const response = await fetchWithTimeout(url.toString(), TIMEOUT_MS, options.ctx, {
+          const response = await fetchWithTimeout(url.toString(), attemptMs, options.ctx, {
             method: options.method ?? 'GET',
             headers: {
               'Content-Type': 'application/json',
@@ -430,11 +524,20 @@ async function fetchFdc<T>(
             );
           }
 
-          return JSON.parse(text) as T;
+          try {
+            return JSON.parse(text) as T;
+          } catch (parseError) {
+            // A complete body that isn't JSON answers the same way again, so it isn't retried.
+            throw serviceUnavailable(
+              'USDA FDC API returned a response body that is not JSON.',
+              { retryable: false },
+              { cause: parseError },
+            );
+          }
         } catch (error) {
-          // Track the latest completed attempt only; one the deadline cut off leaves it as it was.
+          // Track completed attempts only; one the deadline cut off leaves the record as it was.
           if (!signal.aborted) {
-            lastRateLimit =
+            budget.lastRateLimit =
               error instanceof McpError && error.code === JsonRpcErrorCode.RateLimited
                 ? error
                 : undefined;
@@ -443,22 +546,18 @@ async function fetchFdc<T>(
         }
       },
       {
-        operation: `FdcService${path}`,
+        operation: `FDC ${path} request`,
         context: options.ctx,
         baseDelayMs: 1000,
         signal: options.ctx.signal,
-        deadlineMs: DEADLINE_MS,
+        deadlineMs: budget.deadlineAt - Date.now(),
+        ...(options.request === 'batch' && {
+          isTransient: (error: unknown) => !isAttemptTimeout(error) && defaultIsTransient(error),
+        }),
       },
     );
   } catch (error) {
-    if (
-      lastRateLimit &&
-      error instanceof McpError &&
-      error.data?.reason === 'retry_deadline_exceeded'
-    ) {
-      throw lastRateLimit;
-    }
-    throw error;
+    throw options.budget ? error : reportDeadline(budget, error);
   }
 }
 
@@ -472,9 +571,138 @@ async function fetchFdc<T>(
 function batchFoodList(body: unknown): RawFoodDetail[] {
   if (Array.isArray(body)) return body as RawFoodDetail[];
   if (typeof body === 'object' && body !== null && Object.keys(body).length === 0) return [];
+  // A complete body of the wrong shape answers the same way again, so a split never defers it.
   throw serviceUnavailable(
     'USDA FDC /foods returned an unexpected response body instead of a list of foods.',
+    { retryable: false },
   );
+}
+
+/**
+ * Every per-ID refetch in this process waits here for one of 10 slots, so
+ * concurrent calls splitting their batches never put more than 10 single-ID
+ * requests in flight between them. A refetch holds its slot for its whole
+ * ladder. With no rate windows the pacer arms no timer, so it needs no disposal.
+ */
+const singleIdPacer = createPacer({ name: 'fdc-single-id', maxConcurrent: 10 });
+
+/**
+ * Refetches each of `ids` as its own `{ fdcIds: [id] }` record request, after
+ * a batch attempt ran out of time. All start at once through
+ * {@link singleIdPacer} and share `budget`'s deadline. An ID FDC has not
+ * answered when the deadline lands — in flight, retrying, or still queued for
+ * a slot, and then never sent — comes back in `deferredIds`, in `ids` order,
+ * and so does one whose ladder ended on a transient failure
+ * ({@link isTransientFailure}): retries run out, or a Retry-After past the budget.
+ *
+ * @throws The caller's abort reason once `ctx.signal` fires, never a partial result.
+ * @throws The first failure in `ids` order that is not transient — another 4xx,
+ *   or a non-`McpError` — whatever else answered.
+ * @throws When no ID was answered, the first failure in `ids` order the
+ *   deadline did not cause; failing that, `Timeout` (`retry_deadline_exceeded`)
+ *   naming the whole budget, or that 429 per {@link reportDeadline}.
+ */
+async function fetchEachId(
+  ids: number[],
+  budget: FdcBudget,
+  ctx: Context,
+): Promise<{ records: RawFoodDetail[]; deferredIds: number[] }> {
+  // A refetch the deadline stopped before it was sent settles with this, matched by identity.
+  const unsent = new DOMException(
+    'The FDC call budget ran out before this request was sent.',
+    'TimeoutError',
+  );
+  const clock = new AbortController();
+  const timer = setTimeout(() => clock.abort(unsent), budget.deadlineAt - Date.now());
+  // A queued refetch leaves the line when the caller aborts or the deadline lands.
+  const queueSignal = AbortSignal.any([ctx.signal, clock.signal]);
+
+  try {
+    const outcomes = await Promise.allSettled(
+      ids.map((id) =>
+        singleIdPacer.run(
+          async () => {
+            // A slot can open as the deadline lands, before its clock fires.
+            if (Date.now() >= budget.deadlineAt) throw unsent;
+            const body = await fetchFdc<unknown>('/foods', {
+              method: 'POST',
+              body: { fdcIds: [id] },
+              ctx,
+              request: 'record',
+              budget,
+            });
+            return batchFoodList(body);
+          },
+          { signal: queueSignal },
+        ),
+      ),
+    );
+    ctx.signal.throwIfAborted();
+
+    const rejections = outcomes.flatMap((o) => (o.status === 'rejected' ? [o.reason] : []));
+    const fatal = rejections.find((reason) => reason !== unsent && !isTransientFailure(reason));
+    if (fatal !== undefined) throw fatal;
+    const deferredIds = ids.filter((_id, i) => outcomes[i]?.status === 'rejected');
+    if (deferredIds.length === ids.length) {
+      const failure = rejections.find((reason) => reason !== unsent && !isDeadlineExpiry(reason));
+      if (failure !== undefined) throw failure;
+      const s = budget.attempts === 1 ? '' : 's';
+      throw reportDeadline(
+        budget,
+        timeout(
+          `FDC /foods request exceeded its ${DEADLINE_MS}ms retry deadline after ${budget.attempts} attempt${s}.`,
+          {
+            reason: 'retry_deadline_exceeded',
+            deadlineMs: DEADLINE_MS,
+            elapsedMs: Date.now() - (budget.deadlineAt - DEADLINE_MS),
+            retryAttempts: budget.attempts,
+          },
+          { cause: rejections[0] },
+        ),
+      );
+    }
+    if (deferredIds.length > 0) {
+      ctx.log.notice('FDC did not return every ID before the call deadline or kept failing', {
+        requested: ids.length,
+        deferred: deferredIds.length,
+      });
+    }
+    return {
+      records: outcomes.flatMap((o) => (o.status === 'fulfilled' ? o.value : [])),
+      deferredIds,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The records FDC returned for `fdcIds` under one {@link DEADLINE_MS} budget,
+ * and the distinct IDs a split left unanswered ({@link fetchEachId}). One
+ * `{ fdcIds }` request — the full format, because `format: "abridged"` keys
+ * nutrients by SR number with no nutrient id and omits portions — or, once
+ * that request's attempt runs out of time, one request per distinct ID.
+ */
+async function fetchBatch(
+  fdcIds: number[],
+  ctx: Context,
+): Promise<{ records: RawFoodDetail[]; deferredIds: number[] }> {
+  const budget = startBudget();
+  const distinct = [...new Set(fdcIds)];
+  try {
+    const body = await fetchFdc<unknown>('/foods', {
+      method: 'POST',
+      body: { fdcIds },
+      ctx,
+      request: distinct.length === 1 ? 'record' : 'batch',
+      budget,
+    });
+    return { records: batchFoodList(body), deferredIds: [] };
+  } catch (error) {
+    if (!isAttemptTimeout(error)) throw reportDeadline(budget, error);
+    ctx.log.info('FDC batch attempt timed out; refetching each ID', { count: distinct.length });
+    return await fetchEachId(distinct, budget, ctx);
+  }
 }
 
 // ---- Service class ----
@@ -572,14 +800,18 @@ export class FdcService {
     const raw = await fetchFdc<RawFoodDetail>(`/food/${fdcId}`, {
       ctx,
       expectedStatuses: [404],
+      request: 'record',
     });
 
     return normalizeFoodDetail(raw, nutrientFilter);
   }
 
   /**
-   * Batch fetch nutrient profiles for multiple foods (up to 20 IDs).
-   * Returns per-food results and a list of IDs that failed.
+   * Batch fetch nutrient profiles for multiple foods (up to 20 IDs) through
+   * {@link fetchBatch}. Returns per-food results in request order, the IDs FDC
+   * returned no data for, and the distinct IDs it did not return before the
+   * call's deadline or kept failing on — those appear in neither `foods` nor
+   * `failed`.
    */
   async getFoodsBatch(
     fdcIds: number[],
@@ -588,29 +820,22 @@ export class FdcService {
   ): Promise<{
     foods: FoodDetail[];
     failed: Array<{ fdcId: number; error: string }>;
+    deferredIds: number[];
   }> {
     ctx.log.debug('Fetching FDC batch foods', { count: fdcIds.length });
 
-    /**
-     * The full format, because `format: "abridged"` keys nutrients by SR
-     * number with no nutrient id and omits portions.
-     */
-    const body = await fetchFdc<unknown>('/foods', {
-      method: 'POST',
-      body: { fdcIds },
-      ctx,
-    });
-    const rawList = batchFoodList(body);
-
+    const { records, deferredIds } = await fetchBatch(fdcIds, ctx);
     const returnedMap = new Map<number, RawFoodDetail>();
-    for (const item of rawList) {
+    for (const item of records) {
       if (item.fdcId) returnedMap.set(item.fdcId, item);
     }
+    const deferred = new Set(deferredIds);
 
     const foods: FoodDetail[] = [];
     const failed: Array<{ fdcId: number; error: string }> = [];
 
     for (const id of fdcIds) {
+      if (deferred.has(id)) continue;
       const raw = returnedMap.get(id);
       if (!raw) {
         failed.push({ fdcId: id, error: `FDC ID ${id} not found or returned no data.` });
@@ -619,7 +844,7 @@ export class FdcService {
       }
     }
 
-    return { foods, failed };
+    return { foods, failed, deferredIds };
   }
 }
 

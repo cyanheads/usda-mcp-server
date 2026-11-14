@@ -7,7 +7,12 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import {
+  createFetchMock,
+  createMockContext,
+  type FetchMockHarness,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaCompareFoods } from '@/mcp-server/tools/definitions/usda-compare-foods.tool.js';
 import { initFdcService } from '@/services/fdc/fdc-service.js';
@@ -19,6 +24,7 @@ import {
   RAW_CEREAL,
   RAW_COOKIE,
   RAW_FLOUR,
+  RAW_KALE,
   RAW_OLIVE_OIL,
   RAW_OLIVE_OIL_SR,
   RAW_POLLOCK,
@@ -295,6 +301,100 @@ describe('usdaCompareFoods over the real FdcService', () => {
       });
       const food = (result.structuredContent as { foods: object[] }).foods[0] ?? {};
       expect(Object.hasOwn(food, 'basisUnit')).toBe(false);
+    });
+  });
+
+  /** A batch attempt that runs out of time splits into one request per ID under the call's 45 s budget. */
+  describe('when the batch attempt runs out of time', () => {
+    let upstream: FetchMockHarness;
+
+    /** Settles only when the request aborts. */
+    const stall = (request: Request) =>
+      new Promise<Response>((_resolve, reject) => {
+        request.signal.addEventListener('abort', () => reject(request.signal.reason), {
+          once: true,
+        });
+      });
+
+    /** Multi-ID batches stall; a single ID answers after 2 s as a kale-shaped record, unless it is in `stalled`. */
+    function serve(stalled: number[]) {
+      upstream = createFetchMock([
+        {
+          method: 'POST',
+          match: (request) => new URL(request.url).pathname === '/fdc/v1/foods',
+          respond: async (request) => {
+            const { fdcIds } = (await request.clone().json()) as { fdcIds: number[] };
+            const [id = 0] = fdcIds;
+            if (fdcIds.length > 1 || stalled.includes(id)) return stall(request);
+            return new Promise<Response>((resolve) =>
+              setTimeout(
+                () =>
+                  resolve(Response.json([{ ...RAW_KALE, fdcId: id, description: `Food ${id}` }])),
+                2_000,
+              ),
+            );
+          },
+        },
+      ]);
+      upstream.install();
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(async () => {
+      // Run every ladder past its deadline so the process-wide refetch slots are free for the next test.
+      await vi.advanceTimersByTimeAsync(90_000);
+      upstream.restore();
+      vi.useRealTimers();
+    });
+
+    it('compares the 3 foods FDC answered and defers the 2 still pending at the deadline', async () => {
+      serve([12, 14]);
+      const pending = runToolContract(usdaCompareFoods, {
+        fdcIds: [11, 12, 13, 14, 15],
+        nutrients: [PROTEIN, IRON],
+      });
+
+      await vi.advanceTimersByTimeAsync(45_000);
+      const result = await pending;
+      const notice =
+        "2 of the 5 FDC IDs (12, 14) went unanswered: FDC did not return them before this call's deadline or kept failing, so the comparison leaves them out; fetch them one at a time with usda_get_food, or call usda_compare_foods again.";
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        foods: [{ fdcId: 11 }, { fdcId: 13 }, { fdcId: 15 }],
+        nutrients: [
+          { id: PROTEIN, values: [2.92, 2.92, 2.92] },
+          { id: IRON, values: [1.6, 1.6, 1.6] },
+        ],
+        deferredIds: [12, 14],
+        notice,
+      });
+      const text = firstText(result.content);
+      expect(text).toContain('| Nutrient | Food 11 (11) | Food 13 (13) | Food 15 (15) |');
+      expect(text).toContain('**Deferred (not compared):** 12, 14');
+      expect(result.content.map((b) => (b.type === 'text' ? b.text : '')).join('\n')).toContain(
+        `> ${notice}`,
+      );
+    });
+
+    it('raises the deadline error, not too_few_foods, when the deadline leaves 1 food', async () => {
+      serve([12, 13]);
+      const pending = runToolContract(usdaCompareFoods, { fdcIds: [11, 12, 13] });
+
+      await vi.advanceTimersByTimeAsync(45_000);
+      const result = await pending;
+
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.Timeout,
+          message:
+            "Only 1 of 3 FDC IDs returned data: FDC did not return 12, 13 before this call's deadline or kept failing.",
+          data: { reason: 'retry_deadline_exceeded', deferredIds: [12, 13] },
+        },
+      });
     });
   });
 });

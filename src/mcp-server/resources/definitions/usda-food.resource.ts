@@ -40,6 +40,14 @@ export const usdaFoodResource = resource('usda://food/{fdcId}', {
       when: 'The fdcId parameter is not a bare positive integer.',
       recovery: 'Provide a numeric FDC ID from usda_search_foods results.',
     },
+    {
+      reason: 'retry_deadline_exceeded',
+      code: JsonRpcErrorCode.Timeout,
+      when: "FDC did not answer within the call's 45-second budget, across every attempt.",
+      recovery:
+        'Retry the call once; FDC is sometimes slow to build a response, and a later attempt can answer in time.',
+      thrownBy: 'service',
+    },
   ],
 
   async handler(params, ctx) {

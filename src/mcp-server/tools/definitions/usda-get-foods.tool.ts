@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createCounter, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getLimitsConfig } from '@/config/server-config.js';
 import {
@@ -14,8 +15,9 @@ import {
 import { getFdcService } from '@/services/fdc/fdc-service.js';
 
 /**
- * Distinct IDs fetched per call, in one `/foods` request. FDC accepts far more,
- * but a larger batch of full profiles nears the per-attempt timeout and
+ * Distinct IDs fetched per call, sent together as one `/foods` request (split
+ * one ID per request only when that request runs out of time). FDC accepts far
+ * more, but a larger batch of full profiles nears the per-attempt timeout and
  * renders a response too large to use.
  */
 const BATCH_SIZE = 20;
@@ -29,18 +31,43 @@ const deferrals = createCounter(
   '{calls}',
 );
 
-/** Where the deferred IDs go next: usda_get_foods takes at least 2, so a single one is a usda_get_food call. */
-function deferralNotice(distinct: number, deferredIds: number[]): string {
-  const fetched = `Fetched the first ${BATCH_SIZE} of ${distinct} distinct FDC IDs`;
-  return deferredIds.length === 1
-    ? `${fetched}; fetch the 1 ID in deferredIds with usda_get_food (fdcId ${deferredIds[0]}).`
-    : `${fetched}; call usda_get_foods again with the ${deferredIds.length} IDs in deferredIds.`;
+/**
+ * What `deferredIds` holds and where it goes next: the fetched IDs FDC did not
+ * return before the call's deadline or kept failing on (`unanswered`), then
+ * those past {@link BATCH_SIZE}. usda_get_foods takes at least 2 IDs, so a
+ * single one is a usda_get_food call, which also gives one slow record the
+ * whole budget.
+ */
+function deferralNotice(
+  distinct: number,
+  fetched: number,
+  unanswered: number[],
+  deferredIds: number[],
+): string {
+  const pastBatch = `Fetched the first ${BATCH_SIZE} of ${distinct} distinct FDC IDs`;
+  const n = unanswered.length;
+  let lead = pastBatch;
+  if (n > 0) {
+    const late = `(${unanswered.join(', ')}) went unanswered: FDC did not return ${n === 1 ? 'it' : 'them'} before this call's deadline or kept failing`;
+    lead =
+      distinct > BATCH_SIZE
+        ? `${pastBatch}, and ${n} of those ${late}`
+        : `${n} of the ${fetched} fetched FDC IDs ${late}`;
+  }
+  if (deferredIds.length === 1) {
+    return `${lead}; fetch the 1 ID in deferredIds with usda_get_food (fdcId ${deferredIds[0]}).`;
+  }
+  const oneByOne =
+    n === 0
+      ? ''
+      : `, or fetch ${n === deferredIds.length ? 'them' : 'the unanswered ones'} one at a time with usda_get_food`;
+  return `${lead}; call usda_get_foods again with the ${deferredIds.length} IDs in deferredIds${oneByOne}.`;
 }
 
 export const usdaGetFoods = tool('usda_get_foods', {
   title: 'Get USDA Foods (Batch)',
   description:
-    'Fetch nutrient profiles for several foods in one API call. More efficient than calling usda_get_food N times when you already have multiple FDC IDs. Accepts up to 500 IDs: repeats are dropped, the first 20 distinct IDs are fetched, and the rest are returned in deferredIds for a follow-up call. Values are per 100 of each food\'s basisUnit, with no portion scaling: per 100 g (basisUnit "g"), except Branded foods FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent, basis unverified). Use the nutrients[] filter to limit response size — strongly recommended for batch calls; requested IDs a food does not report are listed in its missingNutrients. For side-by-side comparison with a formatted table, use usda_compare_foods instead. Failed IDs (not found or no data) are reported in the failed[] array rather than aborting the entire batch.',
+    'Fetch nutrient profiles for several foods at once. More efficient than calling usda_get_food N times when you already have multiple FDC IDs. Accepts up to 500 IDs: repeats are dropped, the first 20 distinct IDs are fetched, and the rest are returned in deferredIds for a follow-up call. IDs FDC does not return before the call\'s deadline (slow Foundation records, most often) or keeps failing on also come back in deferredIds, ahead of those, named in a notice. Values are per 100 of each food\'s basisUnit, with no portion scaling: per 100 g (basisUnit "g"), except Branded foods FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent, basis unverified). Use the nutrients[] filter to limit response size — strongly recommended for batch calls; requested IDs a food does not report are listed in its missingNutrients. For side-by-side comparison with a formatted table, use usda_compare_foods instead. Failed IDs (not found or no data) are reported in the failed[] array rather than aborting the entire batch.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcIds: z
@@ -133,7 +160,7 @@ export const usdaGetFoods = tool('usda_get_foods', {
       .array(z.number())
       .optional()
       .describe(
-        'Distinct requested IDs past the first 20, in request order, not fetched by this call — foods and failed cover only the fetched IDs. Pass them to usda_get_foods again, or a single one to usda_get_food. Absent when every distinct ID was fetched.',
+        "Distinct requested IDs this call did not fetch, in request order: any FDC did not return before the call's deadline or kept failing on, then those past the first 20, which were never requested from FDC. foods and failed cover neither. Pass them to usda_get_foods again, or a single one to usda_get_food. Absent when every distinct ID was fetched.",
       ),
   }),
   enrichment: {
@@ -141,17 +168,32 @@ export const usdaGetFoods = tool('usda_get_foods', {
       .string()
       .optional()
       .describe(
-        'Deferral notice when more than 20 distinct IDs were requested: how many were fetched, and the call that fetches the IDs in deferredIds.',
+        'Deferral notice when deferredIds is present: how many of the distinct IDs past the first 20 were not fetched, which fetched IDs FDC did not return before the deadline or kept failing on, and the call that fetches them.',
       ),
   },
+
+  errors: [
+    {
+      reason: 'retry_deadline_exceeded',
+      code: JsonRpcErrorCode.Timeout,
+      when: "FDC did not answer within the call's 45-second budget, across every attempt.",
+      recovery:
+        'Retry the call once. FDC builds some records slowly (Foundation foods most often); if it fails again, request fewer foods per call or fetch them one at a time with usda_get_food.',
+      thrownBy: 'service',
+    },
+  ],
 
   async handler(input, ctx) {
     const distinct = [...new Set(input.fdcIds)];
     const fetchIds = distinct.slice(0, BATCH_SIZE);
-    const deferredIds = distinct.slice(BATCH_SIZE);
+    const pastBatch = distinct.slice(BATCH_SIZE);
     ctx.log.info('Fetching batch foods', { count: fetchIds.length });
 
-    const { foods, failed } = await getFdcService().getFoodsBatch(
+    const {
+      foods,
+      failed,
+      deferredIds: unanswered,
+    } = await getFdcService().getFoodsBatch(
       fetchIds,
       input.nutrients?.length ? input.nutrients : undefined,
       ctx,
@@ -159,15 +201,18 @@ export const usdaGetFoods = tool('usda_get_foods', {
 
     ctx.log.info('Batch complete', { succeeded: foods.length, failed: failed.length });
 
-    if (deferredIds.length > 0) {
+    if (pastBatch.length > 0) {
       deferrals.add(1);
       ctx.log.notice('Deferred FDC IDs past the batch size', {
         requested: input.fdcIds.length,
         distinct: distinct.length,
         fetched: fetchIds.length,
-        deferred: deferredIds.length,
+        deferred: pastBatch.length,
       });
-      ctx.enrich.notice(deferralNotice(distinct.length, deferredIds));
+    }
+    const deferredIds = [...unanswered, ...pastBatch];
+    if (deferredIds.length > 0) {
+      ctx.enrich.notice(deferralNotice(distinct.length, fetchIds.length, unanswered, deferredIds));
     }
 
     return {
