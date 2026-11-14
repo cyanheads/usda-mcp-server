@@ -4,7 +4,7 @@ All notable changes to this project. Each entry links to its full per-version fi
 
 ## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-11-14
 
-Portions follow FDC's display order, printed UPC/EAN barcodes match every digit form FDC stores, and a slow Foundation batch is refetched per ID, with IDs unanswered at the 45 s deadline deferred in usda_get_foods and usda_compare_foods.
+Portions follow FDC's display order, printed UPC/EAN barcodes also match the forms FDC stores with other leading zeros or no check digit, and a slow Foundation batch is refetched per ID, with IDs unanswered at the 45 s deadline deferred in usda_get_foods and usda_compare_foods.
 
 ## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-11-10
 
