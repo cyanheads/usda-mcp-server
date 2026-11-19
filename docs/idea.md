@@ -31,7 +31,7 @@ Agents answering questions about nutrition, diet, cooking, food science, or heal
 | `usda_search_foods` | Search foods by name, with optional data source and food category filters |
 | `usda_get_food` | Full nutrient profile for a specific food by FDC ID — all nutrients, portions, data source details |
 | `usda_get_nutrients` | Specific nutrients for a food (e.g., just protein, fat, carbs, calories) — lighter than full profile |
-| `usda_list_nutrients` | Available nutrient types and their IDs/units (there are ~150 tracked nutrients) |
+| `usda_list_nutrients` | Available nutrient types and their IDs/units (there are 269 tracked nutrients) |
 | `usda_search_branded` | Search branded/packaged foods by name, brand, or UPC/GTIN code |
 
 ### Potential additions

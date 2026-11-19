@@ -61,7 +61,7 @@ export const usdaSearchFoods = tool('usda_search_foods', {
       .array(z.enum(['SR Legacy', 'Foundation', 'Survey (FNDDS)', 'Branded']))
       .optional()
       .describe('FDC data sources to search. Defaults to ["SR Legacy"].'),
-    pageSize: z.number().int().min(1).max(50).default(10).describe('Results per page.'),
+    pageSize: z.number().int().min(1).default(10).describe('Results per page.'),
     pageNumber: z.number().int().min(1).default(1).describe('Page number (1-based).'),
   }),
   output: z.object({
@@ -110,7 +110,8 @@ export const usdaFoodResource = resource('usda://food/{fdcId}', {
   errors: [
     { reason: 'invalid_id', code: JsonRpcErrorCode.ValidationError,
       when: 'The fdcId parameter is not a bare positive integer.',
-      recovery: 'Provide a numeric FDC ID from usda_search_foods results.' },
+      recovery: 'Provide a numeric FDC ID from usda_search_foods results.',
+      severity: 'notice' },
   ],
 
   async handler(params, ctx) {
@@ -253,14 +254,16 @@ src/
     fdc/
       basis.ts                          # Per-100 basis (g | ml | unverified label unit) from a Branded label's serving unit
       fdc-service.ts                    # FdcService — API client, normalization, init/accessor
-      nutrient-reference.ts             # Static nutrient reference data (~150 nutrients)
+      provenance.ts                     # Per-nutrient provenance (derivation, dataPoints, min/max/median): extraction, shared output schema, content[] renderer
+      nutrient-reference.ts             # Generated table of 269 nutrients, written by scripts/generate-nutrient-reference.ts; never edited by hand
       types.ts                          # Raw API shapes and normalized domain types
   mcp-server/
+    tools/fdc-id-list.ts                # fdcIds input schema shared by usda_get_foods and usda_compare_foods
     tools/definitions/
       usda-search-foods.tool.ts         # Keyword search with pagination and nutrient preview
       usda-get-food.tool.ts             # Single food detail with portion scaling
       usda-get-foods.tool.ts            # Batch fetch for 2–500 FDC IDs, 20 distinct per call; the rest deferred
-      usda-compare-foods.tool.ts        # Side-by-side comparison table for 2–5 foods
+      usda-compare-foods.tool.ts        # Side-by-side comparison table for 2–500 FDC IDs, first 5 distinct compared; the rest deferred
       usda-list-nutrients.tool.ts       # Static nutrient reference lookup
     resources/definitions/
       usda-food.resource.ts             # usda://food/{fdcId}
@@ -358,7 +361,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting (safe fixes only) |
 | `bun run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
-| `bun run test` | Run tests (Vitest — use `bun run test`, not `bun test`) |
+| `bun run test` | Run tests (Vitest — use `bun run test`, not `bun test`). `vitest` is pinned at exactly `5.1.0`: 5.1.1's forks pool calls `child.channel.unref()`, which Bun 1.4.4 does not implement, so no test file starts under `bun run test`. The pin stays until a vitest release works under Bun |
 | `bun run start:stdio` | Production mode (stdio) |
 | `bun run start:http` | Production mode (HTTP) |
 | `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
