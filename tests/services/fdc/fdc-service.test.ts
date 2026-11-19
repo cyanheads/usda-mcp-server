@@ -10,6 +10,7 @@ import {
   createFetchMock,
   createMockContext,
   type FetchMockHarness,
+  type MockContextLogger,
   runToolContract,
 } from '@cyanheads/mcp-ts-core/testing';
 import { logger } from '@cyanheads/mcp-ts-core/utils';
@@ -17,10 +18,12 @@ import { createWorkerHandler } from '@cyanheads/mcp-ts-core/worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaCompareFoods } from '@/mcp-server/tools/definitions/usda-compare-foods.tool.js';
 import { usdaGetFood } from '@/mcp-server/tools/definitions/usda-get-food.tool.js';
+import { usdaGetFoods } from '@/mcp-server/tools/definitions/usda-get-foods.tool.js';
 import { usdaSearchFoods } from '@/mcp-server/tools/definitions/usda-search-foods.tool.js';
 import {
   encodeFdcFilter,
   escapeFdcQuery,
+  FDC_MAX_PAGE_SIZE,
   FDC_RESULT_WINDOW,
   FdcService,
   initFdcService,
@@ -37,17 +40,21 @@ import {
   createFdcFake,
   FIXTURE_NUTRIENT_COUNT,
   RAW_BRICK_CHEESE,
+  RAW_CHEERIOS,
   RAW_COTTAGE_CHEESE,
   RAW_CUSTARD,
   RAW_DRUMSTICK,
   RAW_KALE,
+  RAW_KALE_FOUNDATION,
+  RAW_KIELBASA,
   RAW_MILK,
   RAW_NOODLES,
   RAW_OLIVE_OIL,
   RAW_ORANGE,
+  RAW_ROAST_CHICKEN,
   RAW_TACO,
 } from '../../fdc-fake.js';
-import { firstText } from '../../helpers.js';
+import { allText, firstText } from '../../helpers.js';
 
 const KALE = 168421;
 const SPINACH = 168462;
@@ -84,7 +91,11 @@ async function requestText(index: number): Promise<string> {
  * `/food/{fdcId}` over the FDC fake for this one call — for upstream shapes
  * the fake's catalog does not hold.
  */
-async function detailOf(raw: RawFoodDetail, nutrientFilter?: number[]): Promise<FoodDetail> {
+async function detailOf(
+  raw: RawFoodDetail,
+  nutrientFilter?: number[],
+  options?: { provenance?: boolean },
+): Promise<FoodDetail> {
   const harness = createFetchMock([
     {
       method: 'GET',
@@ -94,7 +105,7 @@ async function detailOf(raw: RawFoodDetail, nutrientFilter?: number[]): Promise<
   ]);
   harness.install();
   try {
-    return await service.getFoodDetail(raw.fdcId, nutrientFilter, createMockContext());
+    return await service.getFoodDetail(raw.fdcId, nutrientFilter, createMockContext(), options);
   } finally {
     harness.restore();
   }
@@ -138,8 +149,8 @@ describe('FdcService', () => {
 
       expect(food.nutrients.map((n) => n.id)).toEqual([ENERGY, PROTEIN]);
       expect(food.nutrients).toEqual([
-        { id: ENERGY, name: 'Energy', number: '208', amount: 35, unit: 'kcal' },
-        { id: PROTEIN, name: 'Protein', number: '203', amount: 2.92, unit: 'g' },
+        { id: ENERGY, name: 'Energy', number: '208', amount: 35, unit: 'KCAL' },
+        { id: PROTEIN, name: 'Protein', number: '203', amount: 2.92, unit: 'G' },
       ]);
     });
 
@@ -197,7 +208,7 @@ describe('FdcService', () => {
         name: 'Iron, Fe',
         number: '303',
         amount: 2.71,
-        unit: 'mg',
+        unit: 'MG',
       });
     });
 
@@ -313,6 +324,131 @@ describe('FdcService', () => {
         }
       },
     );
+  });
+
+  /**
+   * Detail and batch records spell four units differently from search and the
+   * nutrient reference, and date a record `M/D/YYYY`; normalization puts both
+   * in search's form and passes anything else through as FDC sent it.
+   */
+  describe('unit spelling and publication date', () => {
+    /** The micro sign FDC sends, U+00B5, written as an escape so it cannot pass for a Greek mu. */
+    const MICRO_GRAMS = '\u{00B5}g';
+
+    /** Kale reporting one nutrient, in `unitName`. */
+    const reportedIn = (unitName: string): RawFoodDetail => ({
+      ...RAW_KALE,
+      foodNutrients: [
+        { nutrient: { id: PROTEIN, number: '203', name: 'Protein', unitName }, amount: 1 },
+      ],
+    });
+
+    it.each([
+      ['g', 'G'],
+      ['mg', 'MG'],
+      [MICRO_GRAMS, 'UG'],
+      ['kcal', 'KCAL'],
+      ['IU', 'IU'],
+      ['kJ', 'kJ'],
+      ['MG_ATE', 'MG_ATE'],
+      ['\u{03BC}g', '\u{03BC}g'],
+      ['G', 'G'],
+      [' mg ', 'MG'],
+    ])('reads detail unit %j as %j', async (unitName, expected) => {
+      const food = await detailOf(reportedIn(unitName));
+
+      expect(food.nutrients.map((n) => n.unit)).toEqual([expected]);
+    });
+
+    it('maps the micro sign by table, never uppercasing it into a Greek capital mu', async () => {
+      const food = await detailOf(reportedIn(MICRO_GRAMS));
+
+      expect(food.nutrients[0]?.unit).toBe('UG');
+      expect(food.nutrients[0]?.unit).not.toContain('\u{039C}');
+    });
+
+    it.each([
+      ['4/1/2019', '2019-04-01'],
+      ['12/16/2019', '2019-12-16'],
+      ['2/27/2020', '2020-02-27'],
+      ['10/3/2024', '2024-10-03'],
+      ['04/01/2019', '2019-04-01'],
+      ['2/29/2024', '2024-02-29'],
+      ['2/29/2000', '2000-02-29'],
+      ['1/31/2020', '2020-01-31'],
+      ['3/31/2020', '2020-03-31'],
+      ['5/31/2020', '2020-05-31'],
+      ['7/31/2020', '2020-07-31'],
+      ['8/31/2020', '2020-08-31'],
+      // The date FNDDS and Foundation records send.
+      ['10/31/2024', '2024-10-31'],
+      ['12/31/2023', '2023-12-31'],
+    ])('dates detail %j as %j', async (publicationDate, expected) => {
+      const food = await detailOf({ ...RAW_KALE, publicationDate });
+
+      expect(food.publicationDate).toBe(expected);
+    });
+
+    /** Converting any of these would state a date FDC never sent, so each passes through as sent. */
+    it.each([
+      ['an ISO date', '2019-04-01'],
+      ['a two-digit year', '4/1/19'],
+      ['a dashed date', '4-1-2019'],
+      ['a time of day', '4/1/2019 00:00'],
+      ['surrounding whitespace', ' 4/1/2019 '],
+      ['leading whitespace', ' 4/1/2019'],
+      ['a three-digit month', '104/1/2019'],
+      ['a trailing line break', '4/1/2019\n'],
+      ['a written-out date', 'April 1, 2019'],
+      ['month 13 and day 45', '13/45/2020'],
+      ['month 13', '13/1/2020'],
+      ['month 0', '0/1/2020'],
+      ['day 0', '4/0/2020'],
+      ['30 February', '2/30/2021'],
+      ['29 February in a common year', '2/29/2023'],
+      ['29 February in a century common year', '2/29/1900'],
+      ['31 April', '4/31/2020'],
+      ['31 June', '6/31/2020'],
+      ['31 September', '9/31/2020'],
+      ['31 November', '11/31/2020'],
+    ])('passes %s through as sent', async (_label, publicationDate) => {
+      const food = await detailOf({ ...RAW_KALE, publicationDate });
+
+      expect(food.publicationDate).toBe(publicationDate);
+    });
+
+    it('omits a date FDC does not send', async () => {
+      const { publicationDate: _date, ...undated } = RAW_KALE;
+
+      await expect(detailOf(undated)).resolves.not.toHaveProperty('publicationDate');
+      await expect(detailOf({ ...RAW_KALE, publicationDate: '' })).resolves.not.toHaveProperty(
+        'publicationDate',
+      );
+    });
+
+    it('carries both through the batch path', async () => {
+      const { foods } = await service.getFoodsBatch(
+        [KALE, SPINACH],
+        [ENERGY, PROTEIN, IRON],
+        createMockContext(),
+      );
+
+      expect(foods.map((f) => [f.publicationDate, f.nutrients.map((n) => n.unit)])).toEqual([
+        ['2019-04-01', ['KCAL', 'G', 'MG']],
+        ['2019-04-01', ['KCAL', 'G', 'MG']],
+      ]);
+    });
+
+    it('carries a search row publishedDate as sent, an M/D/YYYY one included', async () => {
+      const row = await searchRowOf({
+        fdcId: KALE,
+        description: 'Kale, raw',
+        dataType: 'SR Legacy',
+        publishedDate: '4/1/2019',
+      });
+
+      expect(row?.publishedDate).toBe('4/1/2019');
+    });
   });
 
   /**
@@ -589,6 +725,79 @@ describe('FdcService', () => {
     });
   });
 
+  /**
+   * A search row keeps fiber as FDC reports it: 1079 and 2033 (AOAC 2011.25)
+   * are different methods, each under its own ID and name, never one filled
+   * from or relabeled as the other.
+   */
+  describe('search preview fiber', () => {
+    const PROTEIN_ENTRY = { nutrientId: 1003, nutrientName: 'Protein', value: 0.94, unitName: 'G' };
+    const FIBER_1079 = {
+      nutrientId: 1079,
+      nutrientName: 'Fiber, total dietary',
+      value: 2.2,
+      unitName: 'G',
+    };
+    const FIBER_2033 = {
+      nutrientId: 2033,
+      nutrientName: 'Total dietary fiber (AOAC 2011.25)',
+      value: 3.97,
+      unitName: 'G',
+    };
+    /** Red onion (FDC 790577), a Foundation record reporting both measures. */
+    const onion = (foodNutrients: NonNullable<RawSearchFood['foodNutrients']>): RawSearchFood => ({
+      fdcId: 790577,
+      description: 'Onions, red, raw',
+      dataType: 'Foundation',
+      foodNutrients,
+    });
+
+    it('keeps 2033 under its own ID and name on a row reporting only 2033', async () => {
+      const row = await searchRowOf(onion([PROTEIN_ENTRY, FIBER_2033]));
+
+      expect(row?.nutrients).toEqual([
+        { id: 1003, name: 'Protein', amount: 0.94, unit: 'G' },
+        { id: 2033, name: 'Total dietary fiber (AOAC 2011.25)', amount: 3.97, unit: 'G' },
+      ]);
+    });
+
+    it.each([
+      ['1079 first', [FIBER_1079, FIBER_2033], [1079, 2033]],
+      ['2033 first', [FIBER_2033, FIBER_1079], [2033, 1079]],
+    ])(
+      'keeps both measures in FDC order on a row reporting both, %s',
+      async (_order, entries, ids) => {
+        const row = await searchRowOf(onion(entries));
+
+        expect(row?.nutrients.map((n) => n.id)).toEqual(ids);
+        expect(row?.nutrients).toContainEqual({
+          id: 1079,
+          name: 'Fiber, total dietary',
+          amount: 2.2,
+          unit: 'G',
+        });
+        expect(row?.nutrients).toContainEqual({
+          id: 2033,
+          name: 'Total dietary fiber (AOAC 2011.25)',
+          amount: 3.97,
+          unit: 'G',
+        });
+      },
+    );
+
+    it('adds no fiber entry to a row reporting neither, other fiber fractions included', async () => {
+      const hmwdf = {
+        nutrientId: 2038,
+        nutrientName: 'High Molecular Weight Dietary Fiber (HMWDF)',
+        value: 3.5,
+        unitName: 'G',
+      };
+      const row = await searchRowOf(onion([PROTEIN_ENTRY, hmwdf]));
+
+      expect(row?.nutrients).toEqual([{ id: 1003, name: 'Protein', amount: 0.94, unit: 'G' }]);
+    });
+  });
+
   /** FDC sends the category under a different field per data type. */
   describe('food category', () => {
     it.each([
@@ -697,6 +906,354 @@ describe('FdcService', () => {
       expect(failed).toStrictEqual([
         { fdcId: 999_999, error: 'FDC ID 999999 not found or returned no data.' },
       ]);
+    });
+  });
+
+  /**
+   * FDC's per-nutrient provenance rides each nutrient only when the caller
+   * asks, as FDC sends it: a key FDC omits stays absent, a value it sends (0
+   * included) is kept, and no derivation is inferred. The extraction rules are
+   * tabled at their own seam (`provenance.test.ts`); these cases cover the
+   * wiring through both fetch paths and the record shape of each data type.
+   */
+  describe('nutrient provenance', () => {
+    const CHICKEN = RAW_ROAST_CHICKEN.fdcId;
+    const FOUNDATION_KALE = RAW_KALE_FOUNDATION.fdcId;
+    const PROVENANCE_KEYS = ['derivation', 'dataPoints', 'min', 'max', 'median'];
+    const ANALYTICAL = {
+      code: 'A',
+      description: 'Analytical',
+      source: 'Analytical or derived from analytical',
+    };
+    const CALCULATED = { code: 'NC', description: 'Calculated', source: 'Calculated or imputed' };
+    const asked = { provenance: true };
+
+    const provenanceKeysOf = (foods: FoodDetail[]) =>
+      foods.flatMap((f) => f.nutrients.flatMap((n) => PROVENANCE_KEYS.filter((k) => k in n)));
+
+    it('attaches none unless asked, on the detail and batch paths', async () => {
+      const ctx = createMockContext();
+      const foods = [
+        await service.getFoodDetail(FOUNDATION_KALE, undefined, ctx),
+        await service.getFoodDetail(CHICKEN, undefined, ctx, { provenance: false }),
+        ...(await service.getFoodsBatch([RAW_KIELBASA.fdcId, RAW_CHEERIOS.fdcId], undefined, ctx))
+          .foods,
+      ];
+
+      expect(foods.map((f) => f.nutrients.length)).toEqual([6, 5, 4, 3]);
+      expect(provenanceKeysOf(foods)).toEqual([]);
+      expect(foods[0]?.nutrients.at(-1)).toStrictEqual({
+        id: 1087,
+        name: 'Calcium, Ca',
+        number: '301',
+        amount: 254,
+        unit: 'MG',
+      });
+    });
+
+    it('carries each Foundation key only where FDC sends it, zeros kept', async () => {
+      const food = await service.getFoodDetail(
+        FOUNDATION_KALE,
+        undefined,
+        createMockContext(),
+        asked,
+      );
+
+      expect(food.nutrients).toStrictEqual([
+        {
+          id: 1008,
+          name: 'Energy',
+          number: '208',
+          amount: 35,
+          unit: 'KCAL',
+          derivation: CALCULATED,
+        },
+        {
+          id: 1003,
+          name: 'Protein',
+          number: '203',
+          amount: 2.92,
+          unit: 'G',
+          derivation: CALCULATED,
+          min: 2.25,
+          max: 3.81,
+          median: 3.06,
+        },
+        {
+          id: 1079,
+          name: 'Fiber, total dietary',
+          number: '291',
+          amount: 4.1,
+          unit: 'G',
+          derivation: ANALYTICAL,
+          dataPoints: 2,
+          min: 4,
+          max: 4.2,
+          median: 4.1,
+        },
+        {
+          id: 1063,
+          name: 'Sugars, Total',
+          number: '269.3',
+          amount: 0.8,
+          unit: 'G',
+          derivation: { code: 'AS', description: 'Summed', source: ANALYTICAL.source },
+        },
+        {
+          id: 1010,
+          name: 'Sucrose',
+          number: '210',
+          amount: 0,
+          unit: 'G',
+          derivation: ANALYTICAL,
+          dataPoints: 2,
+          min: 0,
+          max: 0,
+          median: 0,
+        },
+        {
+          id: 1087,
+          name: 'Calcium, Ca',
+          number: '301',
+          amount: 254,
+          unit: 'MG',
+          derivation: ANALYTICAL,
+          dataPoints: 5,
+          min: 203,
+          max: 281,
+          median: 264,
+        },
+      ]);
+    });
+
+    it('keeps SR Legacy sample counts of 0 and infers no derivation for a measured value', async () => {
+      const food = await service.getFoodDetail(CHICKEN, undefined, createMockContext(), asked);
+
+      expect(food.nutrients.map((n) => [n.id, n.derivation?.code, n.dataPoints])).toEqual([
+        [1008, 'NC', 0],
+        [1003, undefined, 16],
+        [1005, 'Z', 0],
+        [1079, 'Z', 0],
+        [1103, 'A', 20],
+      ]);
+      expect(food.nutrients[1]).toStrictEqual({
+        id: 1003,
+        name: 'Protein',
+        number: '203',
+        amount: 31.02,
+        unit: 'G',
+        dataPoints: 16,
+      });
+      expect(food.nutrients[2]?.derivation).toStrictEqual({
+        code: 'Z',
+        description:
+          'Assumed zero (Insignificant amount or not naturally occurring in a food, such as fiber in meat)',
+        source: 'Assumed zero',
+      });
+      expect(food.nutrients.flatMap((n) => ['min', 'max', 'median'].filter((k) => k in n))).toEqual(
+        [],
+      );
+    });
+
+    it('names the manufacturer source on every Branded value and nothing else', async () => {
+      const food = await service.getFoodDetail(
+        RAW_CHEERIOS.fdcId,
+        undefined,
+        createMockContext(),
+        asked,
+      );
+
+      expect(food.nutrients.map((n) => [n.id, n.derivation])).toStrictEqual([
+        [
+          1082,
+          {
+            code: 'LCSL',
+            description: 'Calculated from a less than value per serving size measure',
+            source: "Manufacturer's analytical; partial documentation",
+          },
+        ],
+        [
+          1087,
+          {
+            code: 'LCCD',
+            description: 'Calculated from a daily value percentage per serving size measure',
+            source: "Manufacturer's analytical; partial documentation",
+          },
+        ],
+        [
+          1003,
+          {
+            code: 'LCSA',
+            description: 'Calculated from an approximate value per serving size measure',
+            source: "Manufacturer's analytical; partial documentation",
+          },
+        ],
+      ]);
+      expect(
+        food.nutrients.flatMap((n) => ['dataPoints', 'min', 'max', 'median'].filter((k) => k in n)),
+      ).toEqual([]);
+    });
+
+    it('adds nothing to a Survey (FNDDS) record, which sends none of it', async () => {
+      const food = await service.getFoodDetail(
+        RAW_TACO.fdcId,
+        undefined,
+        createMockContext(),
+        asked,
+      );
+
+      expect(food.nutrients).toStrictEqual([
+        { id: 1008, name: 'Energy', number: '208', amount: 257, unit: 'KCAL' },
+        { id: 1003, name: 'Protein', number: '203', amount: 16.7, unit: 'G' },
+      ]);
+    });
+
+    it('carries the same fields through the batch path, min and max without a median', async () => {
+      const ctx = createMockContext();
+      const { foods } = await service.getFoodsBatch(
+        [CHICKEN, RAW_KIELBASA.fdcId, FOUNDATION_KALE],
+        [PROTEIN, 1004],
+        ctx,
+        asked,
+      );
+
+      expect(foods.map((f) => [f.fdcId, f.nutrients, f.missingNutrients])).toStrictEqual([
+        [
+          CHICKEN,
+          [{ id: 1003, name: 'Protein', number: '203', amount: 31.02, unit: 'G', dataPoints: 16 }],
+          [1004],
+        ],
+        [
+          RAW_KIELBASA.fdcId,
+          [
+            {
+              id: 1003,
+              name: 'Protein',
+              number: '203',
+              amount: 10.84,
+              unit: 'G',
+              derivation: ANALYTICAL,
+              dataPoints: 15,
+              min: 10.01,
+              max: 13.24,
+            },
+            {
+              id: 1004,
+              name: 'Total lipid (fat)',
+              number: '204',
+              amount: 29.63,
+              unit: 'G',
+              derivation: ANALYTICAL,
+              dataPoints: 15,
+              min: 21.44,
+              max: 32.52,
+            },
+          ],
+          undefined,
+        ],
+        [
+          FOUNDATION_KALE,
+          [
+            {
+              id: 1003,
+              name: 'Protein',
+              number: '203',
+              amount: 2.92,
+              unit: 'G',
+              derivation: CALCULATED,
+              min: 2.25,
+              max: 3.81,
+              median: 3.06,
+            },
+          ],
+          [1004],
+        ],
+      ]);
+    });
+
+    it('returns only the filtered rows, each with its own fields, and the same missingNutrients', async () => {
+      const food = await service.getFoodDetail(
+        FOUNDATION_KALE,
+        [1087, 99_999, ENERGY],
+        createMockContext(),
+        asked,
+      );
+
+      expect(food.nutrients).toStrictEqual([
+        {
+          id: 1008,
+          name: 'Energy',
+          number: '208',
+          amount: 35,
+          unit: 'KCAL',
+          derivation: CALCULATED,
+        },
+        {
+          id: 1087,
+          name: 'Calcium, Ca',
+          number: '301',
+          amount: 254,
+          unit: 'MG',
+          derivation: ANALYTICAL,
+          dataPoints: 5,
+          min: 203,
+          max: 281,
+          median: 264,
+        },
+      ]);
+      expect(food.missingNutrients).toEqual([99_999]);
+    });
+
+    it('drops a derivation FDC sends without a code and a source sent blank', async () => {
+      const food = await detailOf(
+        {
+          ...RAW_KALE_FOUNDATION,
+          foodNutrients: [
+            {
+              nutrient: { id: PROTEIN, number: '203', name: 'Protein', unitName: 'g' },
+              foodNutrientDerivation: { description: 'Calculated' },
+              amount: 2.92,
+              dataPoints: 3,
+            },
+            {
+              nutrient: { id: ENERGY, number: '208', name: 'Energy', unitName: 'kcal' },
+              foodNutrientDerivation: {
+                code: 'NC',
+                description: 'Calculated',
+                foodNutrientSource: { description: '  ' },
+              },
+              amount: 35,
+            },
+          ],
+        },
+        undefined,
+        asked,
+      );
+
+      expect(food.nutrients).toStrictEqual([
+        { id: PROTEIN, name: 'Protein', number: '203', amount: 2.92, unit: 'G', dataPoints: 3 },
+        {
+          id: ENERGY,
+          name: 'Energy',
+          number: '208',
+          amount: 35,
+          unit: 'KCAL',
+          derivation: { code: 'NC', description: 'Calculated' },
+        },
+      ]);
+    });
+
+    it('leaves usda_compare_foods without provenance on both surfaces', async () => {
+      initFdcService();
+      const result = await runToolContract(usdaCompareFoods, {
+        fdcIds: [FOUNDATION_KALE, CHICKEN],
+        nutrients: [1087, PROTEIN],
+      });
+
+      expect(result.isError).toBeFalsy();
+      const json = JSON.stringify(result.structuredContent);
+      expect(PROVENANCE_KEYS.filter((key) => json.includes(`"${key}"`))).toEqual([]);
+      expect(firstText(result.content)).not.toMatch(/Analytical|Calculated|n=\d|range |median/);
     });
   });
 
@@ -894,6 +1451,11 @@ describe('FdcService', () => {
 
     it('exports the 100,000-result window FDC pages within', () => {
       expect(FDC_RESULT_WINDOW).toBe(100_000);
+    });
+
+    it('exports the 200-row page maximum, whose last page inside the window is 500', () => {
+      expect(FDC_MAX_PAGE_SIZE).toBe(200);
+      expect(FDC_RESULT_WINDOW / FDC_MAX_PAGE_SIZE).toBe(500);
     });
 
     it('fails a 400 as query_syntax naming the query, never the URL or key', async () => {
@@ -1267,6 +1829,19 @@ describe('FdcService', () => {
         match: (request) => new URL(request.url).pathname.endsWith('/foods/search'),
         respond: () => Response.json({ totalHits: 0, currentPage: 1, totalPages: 0, foods: [] }),
       });
+    /** A search matching 250,000 foods, so a page at pageSize 50 past 2,000 is out of FDC's reach. */
+    const SEARCH_DEEP = () =>
+      http.route({
+        method: 'POST',
+        match: (request) => new URL(request.url).pathname.endsWith('/foods/search'),
+        respond: () =>
+          Response.json({
+            totalHits: 250_000,
+            currentPage: 1,
+            totalPages: 5_000,
+            foods: [{ fdcId: 746782, description: 'Milk, whole', dataType: 'Foundation' }],
+          }),
+      });
     /** Serves a single food with no portions; the returned harness overrides the fake until restored. */
     const NO_PORTIONS = () => {
       const harness = createFetchMock([
@@ -1329,6 +1904,12 @@ describe('FdcService', () => {
       ['query_syntax', 'usda_search_foods', { query: 'beef AND' }, SEARCH_400],
       ['query_empty', 'usda_search_foods', { query: '   ' }],
       ['no_results', 'usda_search_foods', { query: 'zzzz' }, SEARCH_EMPTY],
+      [
+        'result_window_exceeded',
+        'usda_search_foods',
+        { query: 'milk', pageSize: 50, pageNumber: 2001 },
+        SEARCH_DEEP,
+      ],
       ['quantity_without_unit', 'usda_get_food', { fdcId: KALE, quantity: 2 }],
       ['not_found', 'usda_get_food', { fdcId: 999_999 }],
       ['no_portion_data', 'usda_get_food', { fdcId: KALE, unit: 'serving' }, NO_PORTIONS],
@@ -1352,9 +1933,10 @@ describe('FdcService', () => {
   });
 
   /**
-   * The retry ladder a search page runs: 15 s per attempt, up to 3 retries
-   * with 1 s / 2 s / 4 s backoff (±25 % jitter), all inside one 45 s budget.
-   * Batch and single-record requests vary the attempt bound (their blocks below).
+   * The retry ladder a search page runs: each attempt waits 15 s for headers,
+   * then 15 s more for the body, with up to 3 retries on 1 s / 2 s / 4 s
+   * backoff (±25 % jitter), all inside one 45 s budget. Batch and
+   * single-record requests vary the attempt bound (their blocks below).
    * Driven on fake timers; each scenario's timings clear the jitter bounds.
    */
   describe('retry ladder', () => {
@@ -1388,6 +1970,78 @@ describe('FdcService', () => {
 
     const status = (code: number, headers?: Record<string, string>) => () =>
       Response.json({ error: 'upstream' }, { status: code, ...(headers && { headers }) });
+
+    /**
+     * A 200 whose headers arrive after `headersMs` with the first half of
+     * `json`'s body; the second half follows `bodyMs` later, or never for
+     * `Infinity`. Aborting the request errors the stream with its reason.
+     */
+    const streams =
+      (headersMs: number, bodyMs: number, json: () => unknown): Responder =>
+      (request) =>
+        new Promise((resolve, reject) => {
+          const beforeHeaders = () => {
+            clearTimeout(headers);
+            reject(request.signal.reason);
+          };
+          request.signal.addEventListener('abort', beforeHeaders, { once: true });
+          const headers = setTimeout(() => {
+            request.signal.removeEventListener('abort', beforeHeaders);
+            const bytes = new TextEncoder().encode(JSON.stringify(json()));
+            const half = Math.floor(bytes.length / 2);
+            let open = true;
+            let rest: ReturnType<typeof setTimeout> | undefined;
+            const body = new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(bytes.slice(0, half));
+                if (Number.isFinite(bodyMs)) {
+                  rest = setTimeout(() => {
+                    open = false;
+                    controller.enqueue(bytes.slice(half));
+                    controller.close();
+                  }, bodyMs);
+                }
+                request.signal.addEventListener(
+                  'abort',
+                  () => {
+                    clearTimeout(rest);
+                    if (open) controller.error(request.signal.reason);
+                  },
+                  { once: true },
+                );
+              },
+            });
+            resolve(new Response(body, { headers: { 'Content-Type': 'application/json' } }));
+          }, headersMs);
+        });
+
+    /**
+     * A 200 whose body sends its first chunk and then fails, as a connection
+     * FDC drops mid-body does: the stream errors with neither the caller, the
+     * deadline, nor the attempt bound behind it.
+     */
+    const drops: Responder = () => {
+      let started = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (started) {
+            controller.error(new TypeError('terminated'));
+            return;
+          }
+          started = true;
+          controller.enqueue(new TextEncoder().encode('{"totalHits":1,"foods":['));
+        },
+      });
+      return new Response(body, { headers: { 'Content-Type': 'application/json' } });
+    };
+
+    /** A `/foods/search` page holding kale. */
+    const page = () => ({
+      totalHits: 1,
+      currentPage: 1,
+      totalPages: 1,
+      foods: [{ fdcId: KALE, description: 'Kale, raw', dataType: 'SR Legacy' }],
+    });
 
     let upstream: FetchMockHarness | undefined;
     /** Fake-clock instant each upstream request started at, in call order. */
@@ -1509,11 +2163,51 @@ describe('FdcService', () => {
         expect(call.value?.description).toBe('Kale, raw');
         expect(http.calls).toHaveLength(2);
       });
+
+      it('retries a search page whose body drops mid-read, and returns the next answer', async () => {
+        const http = serve(drops, () => Response.json(page()));
+        const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        expect(call.error).toBeUndefined();
+        expect(call.value?.foods.map((f) => f.fdcId)).toEqual([KALE]);
+        expect(http.calls).toHaveLength(2);
+      });
+
+      it('fails usda_search_foods as ServiceUnavailable after 4 attempts when every body drops mid-read', async () => {
+        const http = serve(drops);
+        const exhausted = expect.stringContaining('(failed after 4 attempts)');
+
+        const direct = track(service.searchFoods({ query: 'kale' }, createMockContext()));
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(direct.error).toBeInstanceOf(McpError);
+        expect(direct.error).toMatchObject({
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          message: exhausted,
+          data: { retryAttempts: 4 },
+        });
+        expect(http.calls).toHaveLength(4);
+
+        initFdcService();
+        const call = track(runToolContract(usdaSearchFoods, { query: 'kale' }));
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(call.value?.isError).toBe(true);
+        expect(call.value?.structuredContent).toMatchObject({
+          error: { code: JsonRpcErrorCode.ServiceUnavailable, message: exhausted },
+        });
+        // Neither surface carries the API key header's value.
+        expect(JSON.stringify(call.value)).not.toContain('test-key');
+        expect(http.calls).toHaveLength(8);
+      });
     });
 
     /**
-     * A search page keeps the 15 s attempt and retries a cut one, so the
-     * ladder's attempt-timeout behavior is pinned on `searchFoods`.
+     * A search page keeps the 15 s bound on headers and on the body, and
+     * retries an attempt either bound cuts, so the ladder's attempt-timeout
+     * behavior is pinned on `searchFoods`.
      */
     describe('total deadline', () => {
       it('rejects a stalled upstream at 45 s with retry_deadline_exceeded', async () => {
@@ -1582,6 +2276,78 @@ describe('FdcService', () => {
         });
         expect(http.calls).toHaveLength(4);
       });
+
+      it('returns a page from one request when its headers land inside 15 s and its body ends after', async () => {
+        const http = serve(streams(14_900, 300, page));
+        const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(15_200);
+
+        expect(call.value?.foods.map((f) => f.fdcId)).toEqual([KALE]);
+        expect(http.calls).toHaveLength(1);
+      });
+
+      it('retries a page whose body is unfinished 15 s after its headers, from that instant', async () => {
+        const http = serve(streams(5_000, Number.POSITIVE_INFINITY, page), () =>
+          Response.json(page()),
+        );
+        const start = Date.now();
+        const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(25_000);
+
+        expect(call.value?.foods.map((f) => f.fdcId)).toEqual([KALE]);
+        expect(http.calls).toHaveLength(2);
+        // Cut at 20 s, then a 750–1250 ms backoff.
+        const retriedAt = (startedAt[1] ?? 0) - start;
+        expect(retriedAt).toBeGreaterThanOrEqual(20_750);
+        expect(retriedAt).toBeLessThanOrEqual(21_250);
+      });
+
+      it.each([
+        ['headers', stall, 'FDC /foods/search attempt was not answered within 15000ms.'],
+        [
+          'body',
+          streams(5_000, Number.POSITIVE_INFINITY, page),
+          "FDC /foods/search attempt's response body did not finish within 15000ms of its headers.",
+        ],
+      ])(
+        'names the %s phase in the retry log line when the 15 s bound cuts a search attempt',
+        async (_phase, responder, message) => {
+          // `withRetry` logs each retry to the framework's module-level logger, so the line is observable only there.
+          const debug = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+          try {
+            serve(responder, () => Response.json(page()));
+            const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
+
+            await vi.advanceTimersByTimeAsync(25_000);
+
+            expect(call.value?.foods.map((f) => f.fdcId)).toEqual([KALE]);
+            // One attempt was cut, so one retry line carries its message; the line's own wording is the framework's.
+            const lines = debug.mock.calls.map(([line]) => String(line));
+            expect(lines.filter((line) => line.includes(message))).toHaveLength(1);
+          } finally {
+            debug.mockRestore();
+          }
+        },
+      );
+
+      it('reports retry_deadline_exceeded when the deadline cuts a body mid-read', async () => {
+        // Headers land 14 s into each attempt and the body never ends: attempt 1 is cut at 29 s, attempt 2's body by the deadline.
+        const http = serve(streams(14_000, Number.POSITIVE_INFINITY, page));
+        const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+        expect(call.error).toMatchObject({
+          code: JsonRpcErrorCode.Timeout,
+          message:
+            'FDC /foods/search request exceeded its 45000ms retry deadline after 2 attempts.',
+          data: { reason: 'retry_deadline_exceeded', deadlineMs: DEADLINE_MS, retryAttempts: 2 },
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(http.calls).toHaveLength(2);
+      });
     });
 
     describe('caller cancellation', () => {
@@ -1642,6 +2408,30 @@ describe('FdcService', () => {
         expect(firstText(call.value?.content ?? [])).toBe('Error: caller went away');
         expect(http.calls).toHaveLength(1);
       });
+
+      it.each([
+        ['before its headers', stall],
+        ['while its body streams', streams(2_000, Number.POSITIVE_INFINITY, page)],
+      ])(
+        'settles a search page as RequestCancelled when the caller aborts %s',
+        async (_phase, responder) => {
+          const http = serve(responder);
+          const controller = new AbortController();
+          const call = track(
+            service.searchFoods(
+              { query: 'kale' },
+              createMockContext({ signal: controller.signal }),
+            ),
+          );
+
+          await vi.advanceTimersByTimeAsync(5_000);
+          controller.abort();
+          await vi.advanceTimersByTimeAsync(120_000);
+
+          expect(call.error).toMatchObject({ code: JsonRpcErrorCode.RequestCancelled });
+          expect(http.calls).toHaveLength(1);
+        },
+      );
     });
 
     /**
@@ -1692,6 +2482,21 @@ describe('FdcService', () => {
         await expect(http.calls[0]?.request.clone().json()).resolves.toEqual({ fdcIds: ids });
       });
 
+      it('returns a record whose body ends 25 s after its headers', async () => {
+        const http = serve(
+          streams(5_000, 25_000, () => RAW_KALE),
+          streams(5_000, 25_000, () => [RAW_KALE]),
+        );
+        const detail = track(service.getFoodDetail(KALE, undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(30_000);
+        const batch = track(service.getFoodsBatch([KALE], undefined, createMockContext()));
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(detail.value?.description).toBe('Kale, raw');
+        expect(batch.value?.foods.map((f) => f.fdcId)).toEqual([KALE]);
+        expect(http.calls).toHaveLength(2);
+      });
+
       it('names a search request in its deadline error', async () => {
         serve(stall);
         const call = track(service.searchFoods({ query: 'kale' }, createMockContext()));
@@ -1706,10 +2511,11 @@ describe('FdcService', () => {
     });
 
     /**
-     * A multi-ID `/foods` batch keeps its 15 s attempt and retries fast
-     * failures; an attempt that times out is not retried whole. Each of its IDs
-     * is refetched as `{ fdcIds: [id] }`, all at once up to a process-wide 10
-     * in flight, inside the call's one 45 s budget.
+     * A multi-ID `/foods` batch keeps its 15 s bound on headers and on the
+     * body, and retries fast failures; an attempt either bound cuts is not
+     * retried whole. Each of its IDs is refetched as `{ fdcIds: [id] }`, all at
+     * once up to a process-wide 10 in flight, inside the call's one 45 s
+     * budget, until one fails in a way FDC would repeat.
      */
     describe('batch split', () => {
       /** A stand-in FDC record for `fdcId`. */
@@ -1815,7 +2621,8 @@ describe('FdcService', () => {
               ? answersAfter(1_000, found(b))
               : answersAfter(500, unknown),
         );
-        const call = track(service.getFoodsBatch([a, b, c], undefined, createMockContext()));
+        const ctx = createMockContext();
+        const call = track(service.getFoodsBatch([a, b, c], undefined, ctx));
 
         await vi.advanceTimersByTimeAsync(15_000);
         expect(sent).toEqual([[a, b, c], [a], [b], [c]]);
@@ -1831,8 +2638,80 @@ describe('FdcService', () => {
           failed: [{ fdcId: c, error: 'FDC ID 13 not found or returned no data.' }],
           deferredIds: [],
         });
+        // Every ID was answered, so the client is told of no deferral.
+        expect(
+          (ctx.log as MockContextLogger).calls.filter((entry) => entry.level === 'notice'),
+        ).toEqual([]);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(sent).toHaveLength(4);
+      });
+
+      it('returns a batch from one request when its headers land inside 15 s and its body ends after', async () => {
+        const ids = range(20, 1);
+        route(() => streams(14_900, 300, () => ids.map(record)));
+        const call = track(service.getFoodsBatch(ids, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(15_200);
+
+        expect(call.value?.foods.map((f) => f.fdcId)).toEqual(ids);
+        expect(sent).toEqual([ids]);
+      });
+
+      it('splits a batch whose body is unfinished 15 s after its headers, from that instant', async () => {
+        const ids = range(20, 1);
+        route((fdcIds) =>
+          fdcIds.length > 1
+            ? streams(5_000, Number.POSITIVE_INFINITY, () => ids.map(record))
+            : answersAfter(1_000, found(fdcIds[0] ?? 0)),
+        );
+        const call = track(service.getFoodsBatch(ids, undefined, createMockContext()));
+
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(startedAt.slice(1)).toEqual(Array.from({ length: 10 }, () => 20_000));
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        expect(call.value).toEqual({
+          foods: ids.map((id) => expect.objectContaining({ fdcId: id })),
+          failed: [],
+          deferredIds: [],
+        });
+        expect(sent).toHaveLength(21);
+      });
+
+      it('settles as RequestCancelled with no single-ID request when the caller aborts while the batch body streams', async () => {
+        route(() => streams(2_000, Number.POSITIVE_INFINITY, () => [record(11), record(12)]));
+        const controller = new AbortController();
+        const call = track(
+          service.getFoodsBatch(
+            [11, 12],
+            undefined,
+            createMockContext({ signal: controller.signal }),
+          ),
+        );
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(call.error).toMatchObject({ code: JsonRpcErrorCode.RequestCancelled });
+        expect(sent).toEqual([[11, 12]]);
+      });
+
+      it('writes no error-level log record for a routine split', async () => {
+        // `fetchWithTimeout` logs to the framework's module-level logger, so its severity is observable only there.
+        const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
+        try {
+          splitting((id) => answersAfter(1_000, found(id)));
+          const call = track(service.getFoodsBatch([11, 12], undefined, createMockContext()));
+
+          await vi.advanceTimersByTimeAsync(16_000);
+
+          expect(call.value?.foods.map((f) => f.fdcId)).toEqual([11, 12]);
+          expect(sent).toEqual([[11, 12], [11], [12]]);
+          expect(error).not.toHaveBeenCalled();
+        } finally {
+          error.mockRestore();
+        }
       });
 
       it('refetches a repeated ID once and defers it once', async () => {
@@ -1854,7 +2733,8 @@ describe('FdcService', () => {
       it('settles at the deadline, deferring the IDs FDC has not answered in request order', async () => {
         const [a, b, c, d] = [11, 12, 13, 14];
         splitting((id) => (id === a || id === c ? stall : answersAfter(1_000, found(id))));
-        const call = track(service.getFoodsBatch([a, b, c, d], undefined, createMockContext()));
+        const ctx = createMockContext();
+        const call = track(service.getFoodsBatch([a, b, c, d], undefined, ctx));
 
         await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
         expect(call.settled).toBe(false);
@@ -1865,6 +2745,15 @@ describe('FdcService', () => {
           failed: [],
           deferredIds: [a, c],
         });
+        expect(
+          (ctx.log as MockContextLogger).calls.filter((entry) => entry.level === 'notice'),
+        ).toEqual([
+          {
+            level: 'notice',
+            msg: 'FDC did not return every ID before the call deadline or kept failing',
+            data: { requested: 4, deferred: 2 },
+          },
+        ]);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(sent).toHaveLength(5);
       });
@@ -1959,6 +2848,27 @@ describe('FdcService', () => {
           expect(sent.filter((ids) => ids.length === 1 && ids[0] === b)).toHaveLength(attempts);
         },
       );
+
+      it('returns the other foods through usda_get_foods and defers an ID whose refetch body drops mid-read on every attempt', async () => {
+        initFdcService();
+        const [a, b, c] = [11, 12, 13];
+        splitting((id) => (id === b ? drops : answersAfter(1_000, found(id))));
+        const call = track(runToolContract(usdaGetFoods, { fdcIds: [a, b, c] }));
+
+        // a and c answer at 16 s; b's four attempts drop mid-body and its ladder ends within 10 s of the split.
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(call.value?.isError).toBeFalsy();
+        expect(call.value?.structuredContent).toMatchObject({
+          foods: [{ fdcId: a }, { fdcId: c }],
+          failed: [],
+          deferredIds: [b],
+        });
+        const text = allText(call.value?.content ?? []);
+        expect(text).toContain('**2 foods fetched** | **0 failed**');
+        expect(text).toContain(`**Deferred (not fetched):** ${b}`);
+        expect(sent.filter((ids) => ids.length === 1 && ids[0] === b)).toHaveLength(4);
+      });
 
       it('throws the transient failure when it ends every ID’s ladder and none was answered', async () => {
         splitting(() => status(503));
@@ -2242,6 +3152,118 @@ describe('FdcService', () => {
 
         expect(singles.max).toBe(10);
         expect(next.value?.foods).toHaveLength(10);
+      });
+
+      /**
+       * A refetch failure FDC would answer the same way again ends the split
+       * the moment it arrives, rather than when the last refetch settles.
+       */
+      describe('a refetch that fails for good', () => {
+        it('fails the call when it arrives, aborting the refetches in flight and sending none still queued', async () => {
+          // Ten singles start at 15 s and ten queue; ID 1's 403 lands at 16 s and the rest stall.
+          splitting((id) =>
+            id === 1
+              ? answersAfter(1_000, status(403))
+              : id > 500
+                ? answersAfter(1_000, found(id))
+                : stall,
+          );
+          const call = track(service.getFoodsBatch(range(20, 1), undefined, createMockContext()));
+
+          await vi.advanceTimersByTimeAsync(16_000);
+
+          expect(call.error).toMatchObject({
+            code: JsonRpcErrorCode.Forbidden,
+            data: { status: 403 },
+          });
+          expect(singles.inFlight).toBe(0);
+
+          // Every slot is free: a call started now splits at 31 s into ten singles at once.
+          singles.max = 0;
+          const next = track(service.getFoodsBatch(range(10, 501), undefined, createMockContext()));
+          await vi.advanceTimersByTimeAsync(16_000);
+          expect(singles.max).toBe(10);
+          expect(next.value?.foods).toHaveLength(10);
+
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect(sent.filter((ids) => ids.length === 1 && (ids[0] ?? 0) <= 20)).toEqual(
+            range(10, 1).map((id) => [id]),
+          );
+        });
+
+        it('reports the first such failure to arrive, discarding the foods already answered', async () => {
+          // c answers at 15.5 s, b's 403 lands at 16 s, a's 401 would land at 18 s, d stalls.
+          const [a, b, c, d] = [11, 12, 13, 14];
+          splitting((id) =>
+            id === a
+              ? answersAfter(3_000, status(401))
+              : id === b
+                ? answersAfter(1_000, status(403))
+                : id === c
+                  ? answersAfter(500, found(c))
+                  : stall,
+          );
+          const call = track(service.getFoodsBatch([a, b, c, d], undefined, createMockContext()));
+
+          await vi.advanceTimersByTimeAsync(16_000);
+
+          expect(call.settled).toBe(true);
+          expect(call.value).toBeUndefined();
+          expect(call.error).toMatchObject({
+            code: JsonRpcErrorCode.Forbidden,
+            data: { status: 403 },
+          });
+        });
+
+        it('leaves the split running past a transient failure, whose slot goes to the next queued ID', async () => {
+          // ID 1's fast 503s end its ladder by 23.75 s; IDs 2–10 answer at 25 s; 11 and 12 queue.
+          splitting((id) => (id === 1 ? status(503) : answersAfter(10_000, found(id))));
+          const call = track(service.getFoodsBatch(range(12, 1), undefined, createMockContext()));
+
+          await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+          expect(call.value).toEqual({
+            foods: range(11, 2).map((id) => expect.objectContaining({ fdcId: id })),
+            failed: [],
+            deferredIds: [1],
+          });
+          const eleventhAt = startedAt[sent.findIndex((ids) => ids.length === 1 && ids[0] === 11)];
+          expect(eleventhAt).toBeLessThan(25_000);
+        });
+
+        it('hands the stopped split’s slots to a concurrent call at once', async () => {
+          // a's eight singles start at 15 s: ID 1's 403 lands at 18 s, the rest stall. b splits at 16 s into the last two slots and queues six.
+          const a = range(8, 1);
+          const b = range(8, 101);
+          splitting((id) =>
+            id === 1
+              ? answersAfter(3_000, status(403))
+              : id < 100
+                ? stall
+                : answersAfter(5_000, found(id)),
+          );
+          const aCall = track(service.getFoodsBatch(a, undefined, createMockContext()));
+          await vi.advanceTimersByTimeAsync(1_000);
+          const bCall = track(service.getFoodsBatch(b, undefined, createMockContext()));
+
+          await vi.advanceTimersByTimeAsync(17_000);
+          expect(aCall.error).toMatchObject({ code: JsonRpcErrorCode.Forbidden });
+          expect(bCall.settled).toBe(false);
+
+          await vi.advanceTimersByTimeAsync(5_000);
+          expect(bCall.value).toEqual({
+            foods: b.map((id) => expect.objectContaining({ fdcId: id })),
+            failed: [],
+            deferredIds: [],
+          });
+          const bSingles = startedAt.filter(
+            (_t, i) => sent[i]?.length === 1 && (sent[i]?.[0] ?? 0) > 100,
+          );
+          expect(bSingles).toEqual([
+            16_000, 16_000, 18_000, 18_000, 18_000, 18_000, 18_000, 18_000,
+          ]);
+          expect(singles.max).toBe(10);
+        });
       });
     });
   });

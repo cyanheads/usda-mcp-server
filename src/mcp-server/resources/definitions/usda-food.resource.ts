@@ -33,12 +33,14 @@ export const usdaFoodResource = resource('usda://food/{fdcId}', {
       code: JsonRpcErrorCode.NotFound,
       when: 'The FDC ID does not exist in the database.',
       recovery: 'Verify the FDC ID using usda_search_foods and use a valid numeric ID.',
+      severity: 'notice',
     },
     {
       reason: 'invalid_id',
       code: JsonRpcErrorCode.ValidationError,
       when: 'The fdcId parameter is not a bare positive integer.',
       recovery: 'Provide a numeric FDC ID from usda_search_foods results.',
+      severity: 'notice',
     },
     {
       reason: 'retry_deadline_exceeded',

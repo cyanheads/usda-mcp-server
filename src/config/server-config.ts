@@ -27,7 +27,7 @@ const LimitsConfigSchema = z.object({
     .stringbool()
     .default(true)
     .describe(
-      'Fetch the first 20 distinct usda_get_foods IDs and defer the rest; false rejects more than 20 IDs',
+      'Serve an over-limit request up to its cap and say what was left out: the first 20 distinct usda_get_foods IDs and the first 5 distinct usda_compare_foods IDs (the rest deferred), and a usda_search_foods pageSize of 200. false rejects more than 20 usda_get_foods entries, more than 5 usda_compare_foods entries, or a pageSize above 200',
     ),
 });
 

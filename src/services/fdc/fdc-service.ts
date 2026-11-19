@@ -19,6 +19,7 @@ import {
 } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import { basisUnitFor } from './basis.js';
+import { nutrientProvenance } from './provenance.js';
 import type {
   FdcDataType,
   FoodDetail,
@@ -33,7 +34,10 @@ import type {
 } from './types.js';
 
 const BASE_URL = 'https://api.nal.usda.gov/fdc/v1';
-/** How long one attempt of a search page or a multi-ID `/foods` batch may run. */
+/**
+ * How long one attempt of a search page or a multi-ID `/foods` batch may wait
+ * for response headers, and then again for the body once they arrive.
+ */
 const TIMEOUT_MS = 15_000;
 /**
  * One tool call's budget across every FDC request it makes — each attempt,
@@ -41,14 +45,22 @@ const TIMEOUT_MS = 15_000;
  * before a 60 s client timeout does.
  */
 const DEADLINE_MS = 45_000;
-/** Search preview only; distinct energy estimates retain their original identities. */
-const SEARCH_NUTRIENT_IDS = new Set([1003, 1004, 1005, 1079, 1008, 1062, 2047, 2048]);
+/**
+ * Search preview only. Distinct measures keep their own IDs: four energy
+ * estimates, and fiber as 1079 and as 2033 (AOAC 2011.25), a different method
+ * that reads higher on every record reporting both, so neither stands in for
+ * the other.
+ */
+const SEARCH_NUTRIENT_IDS = new Set([1003, 1004, 1005, 1079, 2033, 1008, 1062, 2047, 2048]);
 
 /**
  * The deepest result `/foods/search` serves: FDC answers HTTP 400 to any page
  * whose `pageSize × pageNumber` exceeds it, however many foods match.
  */
 export const FDC_RESULT_WINDOW = 100_000;
+
+/** The most rows one `/foods/search` page holds: FDC answers HTTP 400 to a larger `pageSize`. */
+export const FDC_MAX_PAGE_SIZE = 200;
 
 // ---- Normalization helpers ----
 
@@ -66,12 +78,37 @@ function normalizeNutrientFromSearch(raw: RawFoodNutrient): {
   return { id, name, amount, unit };
 }
 
-function normalizeNutrientFromDetail(raw: RawFoodNutrient): FoodNutrient | null {
+/**
+ * The four units detail and batch records spell differently from search and
+ * the nutrient reference, keyed by the detail spelling; every other unit, `IU`
+ * and `kJ` included, is spelled the same on both and passes through. A table,
+ * never `toUpperCase()`: the micro sign FDC sends (U+00B5) uppercases to a
+ * Greek capital mu, not `U`.
+ */
+const SEARCH_UNIT_SPELLING = new Map([
+  ['g', 'G'],
+  ['mg', 'MG'],
+  ['\u{00B5}g', 'UG'],
+  ['kcal', 'KCAL'],
+]);
+
+/**
+ * One detail or batch nutrient row, or null when it lacks an id, name, or
+ * amount. FDC's provenance fields ride it only when `provenance` is set:
+ * `usda://food/{fdcId}` returns the normalized record as-is and usda_get_food
+ * spreads each nutrient into its output, so a field attached by default would
+ * reach both.
+ */
+function normalizeNutrientFromDetail(
+  raw: RawFoodNutrient,
+  provenance: boolean,
+): FoodNutrient | null {
   // Detail responses nest nutrient info under `nutrient` sub-object
   const id = raw.nutrient?.id ?? raw.nutrientId;
   const name = (raw.nutrient?.name ?? raw.nutrientName)?.trim();
   const number = (raw.nutrient?.number ?? raw.nutrientNumber)?.trim() ?? '';
-  const unit = (raw.nutrient?.unitName ?? raw.unitName)?.trim() ?? '';
+  const sentUnit = (raw.nutrient?.unitName ?? raw.unitName)?.trim() ?? '';
+  const unit = SEARCH_UNIT_SPELLING.get(sentUnit) ?? sentUnit;
   const amount = raw.amount ?? raw.value;
   if (id == null || !name || amount == null) return null;
   return {
@@ -81,6 +118,7 @@ function normalizeNutrientFromDetail(raw: RawFoodNutrient): FoodNutrient | null 
     amount,
     unit,
     ...(raw.percentDailyValue != null && { percentDailyValue: raw.percentDailyValue }),
+    ...(provenance && nutrientProvenance(raw)),
   };
 }
 
@@ -173,6 +211,33 @@ function normalizeSearchFood(raw: RawSearchFood): SearchResultFood {
   };
 }
 
+/** The date shape detail and batch records carry, `M/D/YYYY` unpadded (`4/1/2019`). */
+const FDC_DETAIL_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
+
+/** Days in each month of a leap year. */
+const MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isCalendarDate(year: number, month: number, day: number): boolean {
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = month === 2 && !leap ? 28 : MONTH_DAYS[month - 1];
+  return days !== undefined && day >= 1 && day <= days;
+}
+
+/**
+ * A detail `publicationDate` in search's zero-padded `YYYY-MM-DD` form. Only
+ * the `M/D/YYYY` shape converts, matched exactly rather than through
+ * `Date.parse`, which accepts other shapes and reads them by locale. Any other
+ * shape, and a date in that shape that names no calendar day (`13/45/2020`,
+ * `2/30/2021`), passes through as sent, never as a date FDC did not state.
+ */
+function normalizePublicationDate(date: string): string {
+  return date.replace(FDC_DETAIL_DATE, (sent, month: string, day: string, year: string) =>
+    isCalendarDate(Number(year), Number(month), Number(day))
+      ? `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
+      : sent,
+  );
+}
+
 /**
  * Applies the caller's nutrient filter locally, by FDC nutrient id, and names
  * the requested ids the food's profile does not report — deduplicated, in
@@ -183,9 +248,13 @@ function normalizeSearchFood(raw: RawSearchFood): SearchResultFood {
  * FDC nutrient *id* (`1008`). Sending ids upstream returns an empty
  * `foodNutrients[]`, so the full profile is fetched and narrowed here instead.
  */
-function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): FoodDetail {
+function normalizeFoodDetail(
+  raw: RawFoodDetail,
+  nutrientFilter: number[] | undefined,
+  provenance = false,
+): FoodDetail {
   const allNutrients = (raw.foodNutrients ?? [])
-    .map(normalizeNutrientFromDetail)
+    .map((n) => normalizeNutrientFromDetail(n, provenance))
     .filter((n): n is FoodNutrient => n !== null);
 
   const requested = nutrientFilter?.length ? new Set(nutrientFilter) : undefined;
@@ -211,7 +280,7 @@ function normalizeFoodDetail(raw: RawFoodDetail, nutrientFilter?: number[]): Foo
     ...(missingNutrients.length > 0 && { missingNutrients }),
     portions,
     ...(category && { foodCategory: category }),
-    ...(raw.publicationDate && { publicationDate: raw.publicationDate }),
+    ...(raw.publicationDate && { publicationDate: normalizePublicationDate(raw.publicationDate) }),
     ...(raw.brandOwner && { brandOwner: raw.brandOwner }),
     ...(raw.brandName && { brandName: raw.brandName }),
     ...(raw.gtinUpc && { gtinUpc: raw.gtinUpc }),
@@ -442,14 +511,14 @@ function isTransientFailure(error: unknown): boolean {
 }
 
 /**
- * An attempt cut at {@link TIMEOUT_MS} by `fetchWithTimeout`'s own timer —
- * neither the deadline (`FetchSignalTimeout`) nor the caller.
+ * An attempt its own {@link TIMEOUT_MS} bound cut, waiting for headers or for
+ * the body after them — neither the deadline nor the caller.
  */
 function isAttemptTimeout(error: unknown): boolean {
   return (
     error instanceof McpError &&
     error.code === JsonRpcErrorCode.Timeout &&
-    error.data?.errorSource === 'FetchTimeout'
+    error.data?.errorSource === 'AttemptTimeout'
   );
 }
 
@@ -459,12 +528,14 @@ function isAttemptTimeout(error: unknown): boolean {
  * covers every honored `Retry-After`. `request` sets how long one attempt may
  * run:
  *
- * - omitted — a search page: each attempt is cut at {@link TIMEOUT_MS}, and a
- *   cut attempt is retried.
- * - `'batch'` — several IDs from `/foods`: each attempt is cut at `TIMEOUT_MS`,
- *   and a cut attempt is thrown at once rather than retried, for the caller to
- *   split per ID ({@link fetchEachId}). FDC builds the whole response before
- *   sending a byte, so a retry would only start the same wait over.
+ * - omitted — a search page: each attempt waits up to {@link TIMEOUT_MS} for
+ *   headers, then up to `TIMEOUT_MS` more for the body, and an attempt either
+ *   bound cuts is retried.
+ * - `'batch'` — several IDs from `/foods`: the same two bounds, and a cut
+ *   attempt is thrown at once rather than retried, for the caller to split per
+ *   ID ({@link fetchEachId}). FDC builds the whole response before sending a
+ *   byte, so a retry would only start the same wait over; once headers arrive
+ *   the response is built, and its body gets a bound of its own.
  * - `'record'` — one food: an attempt runs until the call's deadline. One
  *   record can take longer than `TIMEOUT_MS` to build, and retrying it only
  *   restarts the build.
@@ -491,32 +562,58 @@ async function fetchFdc<T>(
     request?: 'batch' | 'record';
     /** The call's budget when it makes more than this one request. */
     budget?: FdcBudget;
+    /**
+     * What cancels the ladder, in place of `ctx.signal`: a split's refetches
+     * pass `ctx.signal` joined with the split's own stop.
+     */
+    signal?: AbortSignal;
   },
 ): Promise<T> {
   const budget = options.budget ?? startBudget();
   const apiKey = getServerConfig().fdcApiKey;
   const url = new URL(`${BASE_URL}${path}`);
-  // A record's attempt ends when the deadline clock fires, which is never later than this.
-  const attemptMs = options.request === 'record' ? DEADLINE_MS : TIMEOUT_MS;
 
   try {
     return await withRetry(
       async ({ signal }) => {
         budget.attempts++;
+        // A record has no bound of its own: the deadline ends its attempt.
+        const bound = options.request === 'record' ? undefined : new AbortController();
+        /**
+         * The bound aborts with the default `AbortError`, never a
+         * `TimeoutError`: `fetchWithTimeout` logs a `TimeoutError` on its
+         * signal at `error`, as a caller-side deadline, which every batch that
+         * splits would then write. It logs any other abort at `info`.
+         */
+        const arm = () => bound && setTimeout(() => bound.abort(), TIMEOUT_MS);
+        let timer = arm();
+        let phase: 'headers' | 'body' = 'headers';
         try {
-          // fetchWithTimeout throws a status-mapped McpError on every non-2xx.
-          const response = await fetchWithTimeout(url.toString(), attemptMs, options.ctx, {
+          /**
+           * fetchWithTimeout throws a status-mapped McpError on every non-2xx.
+           * Its own timer, which covers the body too, is set to the deadline,
+           * so the deadline clock always fires first.
+           */
+          const response = await fetchWithTimeout(url.toString(), DEADLINE_MS, options.ctx, {
             method: options.method ?? 'GET',
             headers: {
               'Content-Type': 'application/json',
               'X-Api-Key': apiKey,
             },
             ...(options.body != null && { body: JSON.stringify(options.body) }),
-            // The attempt signal composes ctx.signal with the deadline clock.
-            signal,
+            /**
+             * `signal` joins the ladder's cancellation with the deadline clock.
+             * The bound joins here only: as `withRetry`'s signal, its expiry
+             * would read as a cancellation, never retried.
+             */
+            signal: bound ? AbortSignal.any([signal, bound.signal]) : signal,
             ...(options.expectedStatuses && { expectedStatuses: options.expectedStatuses }),
           });
 
+          // The response is built once headers arrive; the body gets a bound of its own.
+          clearTimeout(timer);
+          timer = arm();
+          phase = 'body';
           const text = await response.text();
           if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
             throw serviceUnavailable(
@@ -534,7 +631,17 @@ async function fetchFdc<T>(
               { cause: parseError },
             );
           }
-        } catch (error) {
+        } catch (caught) {
+          // The bound's expiry reaches here as a cancellation; it is reported as the attempt's own timeout.
+          const error =
+            !signal.aborted && bound?.signal.aborted
+              ? timeout(
+                  phase === 'headers'
+                    ? `FDC ${path} attempt was not answered within ${TIMEOUT_MS}ms.`
+                    : `FDC ${path} attempt's response body did not finish within ${TIMEOUT_MS}ms of its headers.`,
+                  { errorSource: 'AttemptTimeout' },
+                )
+              : caught;
           // Track completed attempts only; one the deadline cut off leaves the record as it was.
           if (!signal.aborted) {
             budget.lastRateLimit =
@@ -543,13 +650,15 @@ async function fetchFdc<T>(
                 : undefined;
           }
           throw error;
+        } finally {
+          clearTimeout(timer);
         }
       },
       {
         operation: `FDC ${path} request`,
         context: options.ctx,
         baseDelayMs: 1000,
-        signal: options.ctx.signal,
+        signal: options.signal ?? options.ctx.signal,
         deadlineMs: budget.deadlineAt - Date.now(),
         ...(options.request === 'batch' && {
           isTransient: (error: unknown) => !isAttemptTimeout(error) && defaultIsTransient(error),
@@ -596,8 +705,11 @@ const singleIdPacer = createPacer({ name: 'fdc-single-id', maxConcurrent: 10 });
  * ({@link isTransientFailure}): retries run out, or a Retry-After past the budget.
  *
  * @throws The caller's abort reason once `ctx.signal` fires, never a partial result.
- * @throws The first failure in `ids` order that is not transient — another 4xx,
- *   or a non-`McpError` — whatever else answered.
+ * @throws The first refetch failure to arrive that is not transient — a 3xx, a
+ *   4xx other than 408, 425, or 429, a 501, a 200 body that is not JSON or not
+ *   a list of foods, or a non-`McpError` — the moment it arrives. It ends the
+ *   split: queued IDs are never sent, refetches in flight are aborted, and
+ *   foods already answered are discarded.
  * @throws When no ID was answered, the first failure in `ids` order the
  *   deadline did not cause; failing that, `Timeout` (`retry_deadline_exceeded`)
  *   naming the whole budget, or that 429 per {@link reportDeadline}.
@@ -614,8 +726,22 @@ async function fetchEachId(
   );
   const clock = new AbortController();
   const timer = setTimeout(() => clock.abort(unsent), budget.deadlineAt - Date.now());
-  // A queued refetch leaves the line when the caller aborts or the deadline lands.
-  const queueSignal = AbortSignal.any([ctx.signal, clock.signal]);
+  /**
+   * This split's own stop, fired by its first refetch failure that is not
+   * transient. It reaches this split's queue and refetch ladders only, never
+   * `ctx.signal`, another call's split, or the shared pacer, so the slots it
+   * frees go straight to whoever is waiting.
+   */
+  const stop = new AbortController();
+  let fatal: unknown;
+  // A queued refetch leaves the line when the caller aborts, the deadline lands, or the split stops.
+  const queueSignal = AbortSignal.any([ctx.signal, clock.signal, stop.signal]);
+  /**
+   * The deadline stays off a refetch's ladder signal: its own clock reports
+   * the deadline as `retry_deadline_exceeded`, where this signal firing would
+   * surface a `FetchSignalTimeout`, which is not transient.
+   */
+  const refetchSignal = AbortSignal.any([ctx.signal, stop.signal]);
 
   try {
     const outcomes = await Promise.allSettled(
@@ -624,24 +750,37 @@ async function fetchEachId(
           async () => {
             // A slot can open as the deadline lands, before its clock fires.
             if (Date.now() >= budget.deadlineAt) throw unsent;
-            const body = await fetchFdc<unknown>('/foods', {
-              method: 'POST',
-              body: { fdcIds: [id] },
-              ctx,
-              request: 'record',
-              budget,
-            });
-            return batchFoodList(body);
+            try {
+              const body = await fetchFdc<unknown>('/foods', {
+                method: 'POST',
+                body: { fdcIds: [id] },
+                ctx,
+                request: 'record',
+                budget,
+                signal: refetchSignal,
+              });
+              return batchFoodList(body);
+            } catch (error) {
+              /**
+               * The first failure FDC would repeat stops the split. A caller
+               * abort fails refetches the same way, but `ctx.signal` is read
+               * first below, so the caller's reason always wins.
+               */
+              if (!stop.signal.aborted && !isTransientFailure(error)) {
+                fatal = error;
+                stop.abort();
+              }
+              throw error;
+            }
           },
           { signal: queueSignal },
         ),
       ),
     );
     ctx.signal.throwIfAborted();
+    if (stop.signal.aborted) throw fatal;
 
     const rejections = outcomes.flatMap((o) => (o.status === 'rejected' ? [o.reason] : []));
-    const fatal = rejections.find((reason) => reason !== unsent && !isTransientFailure(reason));
-    if (fatal !== undefined) throw fatal;
     const deferredIds = ids.filter((_id, i) => outcomes[i]?.status === 'rejected');
     if (deferredIds.length === ids.length) {
       const failure = rejections.find((reason) => reason !== unsent && !isDeadlineExpiry(reason));
@@ -782,12 +921,15 @@ export class FdcService {
   }
 
   /**
-   * Fetch full nutrient detail for a single food by FDC ID.
+   * Fetch full nutrient detail for a single food by FDC ID. `provenance: true`
+   * attaches FDC's per-nutrient derivation, sample count, and spread to each
+   * nutrient ({@link nutrientProvenance}); by default none is attached.
    */
   async getFoodDetail(
     fdcId: number,
     nutrientFilter: number[] | undefined,
     ctx: Context,
+    options: { provenance?: boolean } = {},
   ): Promise<FoodDetail> {
     ctx.log.debug('Fetching FDC food detail', { fdcId });
 
@@ -803,7 +945,7 @@ export class FdcService {
       request: 'record',
     });
 
-    return normalizeFoodDetail(raw, nutrientFilter);
+    return normalizeFoodDetail(raw, nutrientFilter, options.provenance);
   }
 
   /**
@@ -811,12 +953,13 @@ export class FdcService {
    * {@link fetchBatch}. Returns per-food results in request order, the IDs FDC
    * returned no data for, and the distinct IDs it did not return before the
    * call's deadline or kept failing on — those appear in neither `foods` nor
-   * `failed`.
+   * `failed`. `provenance` works as on {@link getFoodDetail}.
    */
   async getFoodsBatch(
     fdcIds: number[],
     nutrientFilter: number[] | undefined,
     ctx: Context,
+    options: { provenance?: boolean } = {},
   ): Promise<{
     foods: FoodDetail[];
     failed: Array<{ fdcId: number; error: string }>;
@@ -840,7 +983,7 @@ export class FdcService {
       if (!raw) {
         failed.push({ fdcId: id, error: `FDC ID ${id} not found or returned no data.` });
       } else {
-        foods.push(normalizeFoodDetail(raw, nutrientFilter));
+        foods.push(normalizeFoodDetail(raw, nutrientFilter, options.provenance));
       }
     }
 

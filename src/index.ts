@@ -39,7 +39,7 @@ await createApp({
   instructions:
     'USDA FoodData Central (FDC) — authoritative US food composition database (~400K+ foods). Key workflow: usda_search_foods → fdcId → usda_get_food (single), usda_get_foods (batch), or usda_compare_foods (comparison). Use usda_list_nutrients to resolve nutrient names to numeric IDs before filtering.',
   setup() {
-    // A bad USDA_CLAMP_LIMITS fails startup here rather than the first usda_get_foods call.
+    // A bad USDA_CLAMP_LIMITS fails startup here rather than the first tool call that reads it.
     getLimitsConfig();
     initFdcService();
   },

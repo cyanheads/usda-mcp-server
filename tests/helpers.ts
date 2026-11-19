@@ -26,6 +26,15 @@ export function allText(blocks: readonly ContentBlock[]): string {
   return blocks.map((block) => (block.type === 'text' ? block.text : '')).join('\n');
 }
 
+/** `count` distinct positive FDC ids, starting at `from` — the values are irrelevant, the length is not. */
+export const ids = (count: number, from = 1) => Array.from({ length: count }, (_v, i) => i + from);
+
+/** An upstream answer that never comes: the promise settles only when the request aborts. */
+export const stall = (request: Request) =>
+  new Promise<Response>((_resolve, reject) => {
+    request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true });
+  });
+
 /**
  * The McpError `fetchWithTimeout` throws for a non-2xx FDC response: the
  * status-mapped code, plus `status` and its legacy `statusCode` alias.

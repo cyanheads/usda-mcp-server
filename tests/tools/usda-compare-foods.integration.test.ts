@@ -19,17 +19,20 @@ import { initFdcService } from '@/services/fdc/fdc-service.js';
 import {
   createFdcFake,
   RAW_APPLE_JUICE,
+  RAW_BRICK_CHEESE,
   RAW_BROCCOLI,
   RAW_BROCCOLI_SR,
   RAW_CEREAL,
   RAW_COOKIE,
+  RAW_CUSTARD,
   RAW_FLOUR,
   RAW_KALE,
+  RAW_NOODLES,
   RAW_OLIVE_OIL,
   RAW_OLIVE_OIL_SR,
   RAW_POLLOCK,
 } from '../fdc-fake.js';
-import { firstText } from '../helpers.js';
+import { allText, firstText, stall } from '../helpers.js';
 
 const { format } = usdaCompareFoods;
 if (!format) throw new Error('usda_compare_foods must declare format()');
@@ -70,13 +73,13 @@ describe('usdaCompareFoods over the real FdcService', () => {
     expect(result.nutrients.every((row) => row.values.every((v) => v !== null))).toBe(true);
 
     const iron = result.nutrients.find((row) => row.id === IRON);
-    expect(iron).toEqual({ id: IRON, name: 'Iron, Fe', unit: 'mg', values: [1.6, 2.71] });
+    expect(iron).toEqual({ id: IRON, name: 'Iron, Fe', unit: 'MG', values: [1.6, 2.71] });
 
     const sugars = result.nutrients.find((row) => row.id === TOTAL_SUGARS);
     expect(sugars).toEqual({
       id: TOTAL_SUGARS,
       name: 'Total Sugars',
-      unit: 'g',
+      unit: 'G',
       values: [0.99, 0.42],
     });
   });
@@ -109,8 +112,8 @@ describe('usdaCompareFoods over the real FdcService', () => {
     const input = usdaCompareFoods.input.parse({ fdcIds: [KALE, SPINACH] });
     const text = firstText(format(await usdaCompareFoods.handler(input, ctx)));
 
-    expect(text).toContain('| Iron, Fe (mg) [ID:1089] | 1.6 | 2.71 |');
-    expect(text).toContain('| Protein (g) [ID:1003] | 2.92 | 2.86 |');
+    expect(text).toContain('| Iron, Fe (MG) [ID:1089] | 1.6 | 2.71 |');
+    expect(text).toContain('| Protein (G) [ID:1003] | 2.92 | 2.86 |');
     // A table whose every cell is an em dash is the empty-comparison symptom.
     expect(text).not.toContain('| — | — |');
   });
@@ -125,7 +128,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
 
     expect(result.nutrients.map((row) => row.id)).toEqual([PROTEIN, IRON]);
     expect(result.missingData).toBeUndefined();
-    expect(firstText(format(result))).toContain('| Iron, Fe (mg) [ID:1089] | 1.6 | 2.71 |');
+    expect(firstText(format(result))).toContain('| Iron, Fe (MG) [ID:1089] | 1.6 | 2.71 |');
   });
 
   it('scales every value to a non-default gram basis', async () => {
@@ -147,15 +150,164 @@ describe('usdaCompareFoods over the real FdcService', () => {
       fdcIds: [999_999_998, 999_999_999],
     });
 
+    const message = 'Only 0 of 2 FDC IDs returned data; FDC has no data for 999999998, 999999999.';
+
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({
       error: {
         code: JsonRpcErrorCode.ValidationError,
-        message: 'Only 0 of 2 FDC IDs returned data.',
+        message,
         data: { reason: 'too_few_foods' },
       },
     });
-    expect(firstText(result.content)).toContain('Only 0 of 2 FDC IDs returned data.');
+    expect(firstText(result.content)).toContain(message);
+  });
+
+  describe('repeated IDs and IDs past the comparison cap', () => {
+    /** The `fdcIds` of every `/foods` request, in the order they reached the stand-in. */
+    const sentFdcIds = () =>
+      Promise.all(
+        http.calls
+          .filter((call) => call.request.method === 'POST')
+          .map(
+            async (call) => ((await call.request.clone().json()) as { fdcIds: number[] }).fdcIds,
+          ),
+      );
+
+    /** Seven SR Legacy foods the stand-in knows, in request order. */
+    const SEVEN = [
+      KALE,
+      SPINACH,
+      RAW_CUSTARD.fdcId,
+      RAW_NOODLES.fdcId,
+      RAW_BRICK_CHEESE.fdcId,
+      RAW_BROCCOLI_SR.fdcId,
+      RAW_OLIVE_OIL_SR.fdcId,
+    ];
+
+    it('sends no request when fdcIds holds 1 distinct ID', async () => {
+      const result = await runToolContract(usdaCompareFoods, {
+        fdcIds: [SPINACH, SPINACH],
+        nutrients: [IRON, IRON],
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message: 'fdcIds holds 1 distinct FDC ID (168462); a comparison needs at least 2.',
+          data: { reason: 'too_few_foods' },
+        },
+      });
+      expect(http.calls).toHaveLength(0);
+    });
+
+    it('fails too_few_foods naming the unknown IDs and the one past the cap, which never reaches FDC', async () => {
+      const result = await runToolContract(usdaCompareFoods, {
+        fdcIds: [999_999_901, 999_999_902, 999_999_903, 999_999_904, 171_477, 173_879],
+      });
+      const message =
+        'Only 1 of 5 FDC IDs returned data; FDC has no data for 999999901, 999999902, 999999903, 999999904. 173879 was past the first 5 and never requested; call usda_compare_foods again without the IDs FDC has no data for.';
+
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message,
+          data: { reason: 'too_few_foods', deferredIds: [173_879] },
+        },
+      });
+      expect(allText(result.content)).toContain(message);
+      expect(await sentFdcIds()).toEqual([
+        [999_999_901, 999_999_902, 999_999_903, 999_999_904, 171_477],
+      ]);
+    });
+
+    it('fails too_few_foods naming the unknown ID when a repeat was the only second food', async () => {
+      const result = await runToolContract(usdaCompareFoods, {
+        fdcIds: [SPINACH, SPINACH, 999_999_901],
+        nutrients: [IRON],
+      });
+      const message = 'Only 1 of 2 FDC IDs returned data; FDC has no data for 999999901.';
+
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message,
+          data: { reason: 'too_few_foods' },
+        },
+      });
+      expect(firstText(result.content)).toContain(message);
+      expect(await sentFdcIds()).toEqual([[SPINACH, 999_999_901]]);
+    });
+
+    it('compares a repeated food once and a repeated nutrient in one row', async () => {
+      const result = await runToolContract(usdaCompareFoods, {
+        fdcIds: [SPINACH, SPINACH, KALE],
+        nutrients: [IRON, IRON],
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        foods: [{ fdcId: SPINACH }, { fdcId: KALE }],
+        nutrients: [{ id: IRON, values: [2.71, 1.6] }],
+      });
+      const text = allText(result.content);
+      expect(text).toContain('[ID:1089] | 2.71 | 1.6 |');
+      expect(text.match(/\[ID:1089\]/g)).toHaveLength(1);
+      expect(await sentFdcIds()).toEqual([[SPINACH, KALE]]);
+    });
+
+    it('requests the first 5 of 7 distinct IDs in one call, and its follow-up compares the last 2', async () => {
+      const first = await runToolContract(usdaCompareFoods, {
+        fdcIds: SEVEN,
+        nutrients: [PROTEIN],
+      });
+      const notice =
+        'A comparison holds at most 5 foods: this one took the first 5 of 7 distinct FDC IDs and left 2 unrequested; call usda_compare_foods with the 2 IDs in deferredIds and the same nutrients, quantity, and unit.';
+
+      expect(first.structuredContent).toMatchObject({
+        foods: SEVEN.slice(0, 5).map((fdcId) => ({ fdcId })),
+        deferredIds: SEVEN.slice(5),
+        notice,
+      });
+      expect(allText(first.content)).toContain(`> ${notice}`);
+      expect(await sentFdcIds()).toEqual([SEVEN.slice(0, 5)]);
+
+      const { deferredIds } = first.structuredContent as { deferredIds: number[] };
+      const followUp = await runToolContract(usdaCompareFoods, {
+        fdcIds: deferredIds,
+        nutrients: [PROTEIN],
+      });
+
+      expect(followUp.isError).toBeFalsy();
+      expect(followUp.structuredContent).toMatchObject({
+        foods: SEVEN.slice(5).map((fdcId) => ({ fdcId })),
+      });
+      expect(followUp.structuredContent).not.toHaveProperty('deferredIds');
+      expect(await sentFdcIds()).toEqual([SEVEN.slice(0, 5), SEVEN.slice(5)]);
+    });
+
+    it('pairs a sixth distinct ID with the first compared food, and that comparison keeps the rows and basis', async () => {
+      const sixth = RAW_BROCCOLI_SR.fdcId;
+      const first = await runToolContract(usdaCompareFoods, {
+        fdcIds: SEVEN.slice(0, 6),
+        nutrients: [PROTEIN],
+      });
+
+      expect(first.structuredContent).toMatchObject({
+        deferredIds: [sixth],
+        notice: `A comparison holds at most 5 foods: this one took the first 5 of 6 distinct FDC IDs and left 1 unrequested; to compare the 1 ID in deferredIds on the same rows and basis, call usda_compare_foods with fdcIds [${KALE}, ${sixth}] and the same nutrients, quantity, and unit.`,
+      });
+      const followUp = await runToolContract(usdaCompareFoods, {
+        fdcIds: [KALE, sixth],
+        nutrients: [PROTEIN],
+      });
+      expect(followUp.isError).toBeFalsy();
+      expect(followUp.structuredContent).toMatchObject({
+        basis: { quantity: 100, unit: 'g', gramWeight: 100 },
+        foods: [{ fdcId: KALE }, { fdcId: sixth }],
+        nutrients: [{ id: PROTEIN, values: [2.92, 2.82] }],
+      });
+      expect(followUp.structuredContent).not.toHaveProperty('deferredIds');
+    });
   });
 
   it('records no substitutions when both foods report every default directly', async () => {
@@ -181,7 +333,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
       expect(result.nutrients.find((row) => row.id === TOTAL_SUGARS)).toEqual({
         id: TOTAL_SUGARS,
         name: 'Total Sugars',
-        unit: 'g',
+        unit: 'G',
         values: [1.4, 1.7],
       });
       expect(result.substitutions).toEqual([
@@ -190,7 +342,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
       expect(result.missingData).toBeUndefined();
       const text = firstText(format(result));
       expect(text).toContain('| Nutrient | Broccoli, raw (747447) | Broccoli, raw (170379) |');
-      expect(text).toContain('| Total Sugars (g) [ID:2000] | 1.4 | 1.7 |');
+      expect(text).toContain('| Total Sugars (G) [ID:2000] | 1.4 | 1.7 |');
       expect(text).toContain('- FDC ID 747447: nutrient 2000 filled from 1063');
     });
 
@@ -218,7 +370,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
       expect(result.nutrients.find((row) => row.id === ENERGY)).toEqual({
         id: ENERGY,
         name: 'Energy',
-        unit: 'kcal',
+        unit: 'KCAL',
         values: [78.4785, 34],
       });
       expect(result.substitutions).toEqual([{ fdcId: 2768188, requested: ENERGY, used: 2047 }]);
@@ -242,7 +394,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
       });
 
       expect(result.nutrients).toEqual([
-        { id: ENERGY, name: 'Energy', unit: 'kcal', values: [null, 34] },
+        { id: ENERGY, name: 'Energy', unit: 'KCAL', values: [null, 34] },
       ]);
       expect(result.missingData).toEqual([{ fdcId: 2003586, nutrientId: ENERGY }]);
       expect(result).not.toHaveProperty('substitutions');
@@ -269,9 +421,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
         ],
         notice,
       });
-      const text = result.content
-        .map((block) => (block.type === 'text' ? block.text : ''))
-        .join('\n');
+      const text = allText(result.content);
       expect(text).toContain(`> ${notice}`);
       expect(text).toContain(
         '- **EXTRA VIRGIN OLIVE OIL, EXTRA VIRGIN** (FDC ID: 2151571, type: Branded, label unit: ml, basis: per 100 ml)',
@@ -307,14 +457,8 @@ describe('usdaCompareFoods over the real FdcService', () => {
   /** A batch attempt that runs out of time splits into one request per ID under the call's 45 s budget. */
   describe('when the batch attempt runs out of time', () => {
     let upstream: FetchMockHarness;
-
-    /** Settles only when the request aborts. */
-    const stall = (request: Request) =>
-      new Promise<Response>((_resolve, reject) => {
-        request.signal.addEventListener('abort', () => reject(request.signal.reason), {
-          once: true,
-        });
-      });
+    /** The `fdcIds` of every `/foods` request, in the order they reached the upstream. */
+    let sent: number[][];
 
     /** Multi-ID batches stall; a single ID answers after 2 s as a kale-shaped record, unless it is in `stalled`. */
     function serve(stalled: number[]) {
@@ -324,6 +468,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
           match: (request) => new URL(request.url).pathname === '/fdc/v1/foods',
           respond: async (request) => {
             const { fdcIds } = (await request.clone().json()) as { fdcIds: number[] };
+            sent.push(fdcIds);
             const [id = 0] = fdcIds;
             if (fdcIds.length > 1 || stalled.includes(id)) return stall(request);
             return new Promise<Response>((resolve) =>
@@ -341,6 +486,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
 
     beforeEach(() => {
       vi.useFakeTimers();
+      sent = [];
     });
 
     afterEach(async () => {
@@ -375,9 +521,7 @@ describe('usdaCompareFoods over the real FdcService', () => {
       const text = firstText(result.content);
       expect(text).toContain('| Nutrient | Food 11 (11) | Food 13 (13) | Food 15 (15) |');
       expect(text).toContain('**Deferred (not compared):** 12, 14');
-      expect(result.content.map((b) => (b.type === 'text' ? b.text : '')).join('\n')).toContain(
-        `> ${notice}`,
-      );
+      expect(allText(result.content)).toContain(`> ${notice}`);
     });
 
     it('raises the deadline error, not too_few_foods, when the deadline leaves 1 food', async () => {
@@ -395,6 +539,28 @@ describe('usdaCompareFoods over the real FdcService', () => {
           data: { reason: 'retry_deadline_exceeded', deferredIds: [12, 13] },
         },
       });
+    });
+
+    it('lists the unanswered ID ahead of the IDs past the cap, which never reach FDC', async () => {
+      serve([12]);
+      const pending = runToolContract(usdaCompareFoods, {
+        fdcIds: [11, 12, 13, 14, 15, 16, 17],
+        nutrients: [PROTEIN],
+      });
+
+      await vi.advanceTimersByTimeAsync(45_000);
+      const result = await pending;
+      const notice =
+        "A comparison holds at most 5 foods: this one took the first 5 of 7 distinct FDC IDs and left 2 unrequested; 1 of the 5 (12) went unanswered: FDC did not return it before this call's deadline or kept failing, so the comparison leaves it out; call usda_compare_foods with the 3 IDs in deferredIds and the same nutrients, quantity, and unit, or fetch the unanswered one with usda_get_food.";
+
+      expect(result.structuredContent).toMatchObject({
+        foods: [{ fdcId: 11 }, { fdcId: 13 }, { fdcId: 14 }, { fdcId: 15 }],
+        deferredIds: [12, 16, 17],
+        notice,
+      });
+      expect(allText(result.content)).toContain(`> ${notice}`);
+      // One batch of the first 5, then one request per ID among them; 16 and 17 never reached FDC.
+      expect(sent).toEqual([[11, 12, 13, 14, 15], [11], [12], [13], [14], [15]]);
     });
   });
 });

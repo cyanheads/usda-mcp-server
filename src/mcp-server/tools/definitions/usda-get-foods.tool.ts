@@ -6,13 +6,14 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createCounter, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
-import { getLimitsConfig } from '@/config/server-config.js';
+import { fdcIdList } from '@/mcp-server/tools/fdc-id-list.js';
 import {
   BASIS_UNIT_DESCRIPTION,
   basisLabel,
   LABEL_UNIT_DESCRIPTION,
 } from '@/services/fdc/basis.js';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
+import { NUTRIENT_PROVENANCE_OUTPUT, provenanceText } from '@/services/fdc/provenance.js';
 
 /**
  * Distinct IDs fetched per call, sent together as one `/foods` request (split
@@ -21,9 +22,6 @@ import { getFdcService } from '@/services/fdc/fdc-service.js';
  * renders a response too large to use.
  */
 const BATCH_SIZE = 20;
-
-/** The most `fdcIds` entries a call accepts; distinct IDs past {@link BATCH_SIZE} are deferred. */
-const MAX_ENTRIES = 500;
 
 const deferrals = createCounter(
   'usda.batch.deferrals',
@@ -34,9 +32,10 @@ const deferrals = createCounter(
 /**
  * What `deferredIds` holds and where it goes next: the fetched IDs FDC did not
  * return before the call's deadline or kept failing on (`unanswered`), then
- * those past {@link BATCH_SIZE}. usda_get_foods takes at least 2 IDs, so a
- * single one is a usda_get_food call, which also gives one slow record the
- * whole budget.
+ * those past {@link BATCH_SIZE}. The follow-up carries the same nutrients and
+ * provenance, so it returns what this call would have. usda_get_foods takes at
+ * least 2 IDs, so a single one is a usda_get_food call, which also gives one
+ * slow record the whole budget.
  */
 function deferralNotice(
   distinct: number,
@@ -55,54 +54,35 @@ function deferralNotice(
         : `${n} of the ${fetched} fetched FDC IDs ${late}`;
   }
   if (deferredIds.length === 1) {
-    return `${lead}; fetch the 1 ID in deferredIds with usda_get_food (fdcId ${deferredIds[0]}).`;
+    return `${lead}; fetch the 1 ID in deferredIds with usda_get_food (fdcId ${deferredIds[0]}) and the same nutrients and provenance.`;
   }
   const oneByOne =
     n === 0
       ? ''
       : `, or fetch ${n === deferredIds.length ? 'them' : 'the unanswered ones'} one at a time with usda_get_food`;
-  return `${lead}; call usda_get_foods again with the ${deferredIds.length} IDs in deferredIds${oneByOne}.`;
+  return `${lead}; call usda_get_foods again with the ${deferredIds.length} IDs in deferredIds and the same nutrients and provenance${oneByOne}.`;
 }
 
 export const usdaGetFoods = tool('usda_get_foods', {
   title: 'Get USDA Foods (Batch)',
   description:
-    'Fetch nutrient profiles for several foods at once. More efficient than calling usda_get_food N times when you already have multiple FDC IDs. Accepts up to 500 IDs: repeats are dropped, the first 20 distinct IDs are fetched, and the rest are returned in deferredIds for a follow-up call. IDs FDC does not return before the call\'s deadline (slow Foundation records, most often) or keeps failing on also come back in deferredIds, ahead of those, named in a notice. Values are per 100 of each food\'s basisUnit, with no portion scaling: per 100 g (basisUnit "g"), except Branded foods FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent, basis unverified). Use the nutrients[] filter to limit response size — strongly recommended for batch calls; requested IDs a food does not report are listed in its missingNutrients. For side-by-side comparison with a formatted table, use usda_compare_foods instead. Failed IDs (not found or no data) are reported in the failed[] array rather than aborting the entire batch.',
+    'Fetch nutrient profiles for several foods at once. More efficient than calling usda_get_food N times when you already have multiple FDC IDs. Accepts up to 500 IDs: repeats are dropped, the first 20 distinct IDs are fetched, and the rest are returned in deferredIds for a follow-up call. IDs FDC does not return before the call\'s deadline (slow Foundation records, most often) or keeps failing on also come back in deferredIds, ahead of those, named in a notice. Values are per 100 of each food\'s basisUnit, with no portion scaling: per 100 g (basisUnit "g"), except Branded foods FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent, basis unverified). Use the nutrients[] filter to limit response size — strongly recommended for batch calls; requested IDs a food does not report are listed in its missingNutrients. Set provenance=true to add to each nutrient how FDC obtained its value (derivation code, description, and source), its sample count (dataPoints), and the sample min, max, and median, each only where FDC sends it. For side-by-side comparison with a formatted table, use usda_compare_foods instead. Failed IDs (not found or no data) are reported in the failed[] array rather than aborting the entire batch.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
-    fdcIds: z
-      .array(z.number().int().min(1))
-      .min(2)
-      .max(MAX_ENTRIES, {
-        /**
-         * Under USDA_CLAMP_LIMITS=false the bound a caller must meet is 20, so a call past 500
-         * names 20 too; undefined keeps Zod's default. Config is read here, never at import.
-         */
-        error: () =>
-          getLimitsConfig().clampLimits
-            ? undefined
-            : `Too big: expected array to have <=${BATCH_SIZE} items`,
-      })
-      // USDA_CLAMP_LIMITS=false keeps the 20-ID bound, raising the same issue a `.max(20)` would.
-      .superRefine((fdcIds, refinement) => {
-        if (fdcIds.length > BATCH_SIZE && !getLimitsConfig().clampLimits) {
-          refinement.addIssue({
-            code: 'too_big',
-            maximum: BATCH_SIZE,
-            origin: 'array',
-            inclusive: true,
-            input: fdcIds,
-          });
-        }
-      })
-      .describe(
-        'FDC IDs to fetch — 2 to 500 entries (a server configured with strict limits rejects more than 20). Repeats are dropped; the first 20 distinct IDs are fetched and the rest are returned in deferredIds. Use usda_search_foods to discover IDs.',
-      ),
+    fdcIds: fdcIdList(BATCH_SIZE).describe(
+      'FDC IDs to fetch — 2 to 500 entries (a server configured with strict limits rejects more than 20). Repeats are dropped; the first 20 distinct IDs are fetched and the rest are returned in deferredIds. Use usda_search_foods to discover IDs.',
+    ),
     nutrients: z
       .array(z.number().int().min(1))
       .optional()
       .describe(
         'Filter to specific nutrient IDs (e.g. [1003, 1004, 1005, 1008]). Strongly recommended — full profiles can be large. Use usda_list_nutrients to look up IDs. Requested IDs a food does not report are listed in its missingNutrients.',
+      ),
+    provenance: z
+      .boolean()
+      .default(false)
+      .describe(
+        'Add to each nutrient what FDC records about its value: derivation (code, description, source), dataPoints (sample count), and min, max, median (sample spread, per 100 of basisUnit like amount). Each is present only where FDC sends it: Survey (FNDDS) foods send none, Branded foods only a derivation. Off by default; it makes the response two to three times as large.',
       ),
   }),
   output: z.object({
@@ -130,6 +110,7 @@ export const usdaGetFoods = tool('usda_get_foods', {
                     number: z.string().describe('SR reference number.'),
                     amount: z.number().describe('Amount per 100 of basisUnit.'),
                     unit: z.string().describe('Measurement unit (e.g. "G", "MG", "KCAL").'),
+                    ...NUTRIENT_PROVENANCE_OUTPUT.shape,
                   })
                   .describe('A nutrient entry with ID, name, amount, and unit.'),
               )
@@ -160,7 +141,7 @@ export const usdaGetFoods = tool('usda_get_foods', {
       .array(z.number())
       .optional()
       .describe(
-        "Distinct requested IDs this call did not fetch, in request order: any FDC did not return before the call's deadline or kept failing on, then those past the first 20, which were never requested from FDC. foods and failed cover neither. Pass them to usda_get_foods again, or a single one to usda_get_food. Absent when every distinct ID was fetched.",
+        "Distinct requested IDs this call did not fetch, in request order: any FDC did not return before the call's deadline or kept failing on, then those past the first 20, which were never requested from FDC. foods and failed cover neither. Pass them to usda_get_foods again, or a single one to usda_get_food, with the same nutrients and provenance. Absent when every distinct ID was fetched.",
       ),
   }),
   enrichment: {
@@ -197,6 +178,7 @@ export const usdaGetFoods = tool('usda_get_foods', {
       fetchIds,
       input.nutrients?.length ? input.nutrients : undefined,
       ctx,
+      { provenance: input.provenance },
     );
 
     ctx.log.info('Batch complete', { succeeded: foods.length, failed: failed.length });
@@ -228,6 +210,11 @@ export const usdaGetFoods = tool('usda_get_foods', {
           number: n.number,
           amount: n.amount,
           unit: n.unit,
+          ...(n.derivation && { derivation: n.derivation }),
+          ...(n.dataPoints !== undefined && { dataPoints: n.dataPoints }),
+          ...(n.min !== undefined && { min: n.min }),
+          ...(n.max !== undefined && { max: n.max }),
+          ...(n.median !== undefined && { median: n.median }),
         })),
         ...(f.missingNutrients && { missingNutrients: f.missingNutrients }),
       })),
@@ -247,13 +234,15 @@ export const usdaGetFoods = tool('usda_get_foods', {
       const labelUnit = food.servingSizeUnit
         ? ` | **Label unit:** ${escapeMarkdownInline(food.servingSizeUnit)}`
         : '';
-      lines.push(`**FDC ID:** ${food.fdcId} | **Type:** ${food.dataType}${labelUnit}`);
+      lines.push(
+        `**FDC ID:** ${food.fdcId} | **Type:** ${escapeMarkdownInline(food.dataType)}${labelUnit}`,
+      );
       const basis = escapeMarkdownInline(basisLabel(food.basisUnit, food.servingSizeUnit));
       if (food.nutrients.length > 0) {
         lines.push(`**Nutrients (${basis}):**`);
         for (const n of food.nutrients) {
           lines.push(
-            `- ${escapeMarkdownInline(n.name)} (ID: ${n.id}, SR#: ${n.number}): ${n.amount} ${n.unit}`,
+            `- ${escapeMarkdownInline(n.name)} (ID: ${n.id}${n.number ? `, SR#: ${escapeMarkdownInline(n.number)}` : ''}): ${n.amount} ${escapeMarkdownInline(n.unit)}${provenanceText(n)}`,
           );
         }
       } else {

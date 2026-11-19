@@ -13,7 +13,7 @@ import { usdaGetFood } from '@/mcp-server/tools/definitions/usda-get-food.tool.j
 import { usdaSearchFoods } from '@/mcp-server/tools/definitions/usda-search-foods.tool.js';
 import { getFdcService, initFdcService } from '@/services/fdc/fdc-service.js';
 import type { RawFoodDetail, RawSearchResponse } from '@/services/fdc/types.js';
-import { firstText } from '../helpers.js';
+import { allText, firstText } from '../helpers.js';
 
 /** Selected fields from FDC food 2642006; nutrient values remain per 100 g. */
 const CEREAL: RawFoodDetail = {
@@ -63,7 +63,7 @@ describe('search and serving over real FdcService', () => {
       (await service.getFoodsBatch([2642006], undefined, ctx)).foods[0]?.nutrients.map((n) => n.id),
     ).toEqual([1003, 1089]);
     expect((await service.getFoodDetail(2642006, [1089], ctx)).nutrients).toEqual([
-      { id: 1089, name: 'Iron, Fe', number: '303', unit: 'mg', amount: 19.46 },
+      { id: 1089, name: 'Iron, Fe', number: '303', unit: 'MG', amount: 19.46 },
     ]);
     expect(http.calls.every((c) => !new URL(c.request.url).searchParams.has('nutrients'))).toBe(
       true,
@@ -110,7 +110,7 @@ describe('search and serving over real FdcService', () => {
     expect(firstText(result.content)).toContain('check spelling');
   });
 
-  it('projects exactly the eight search nutrient IDs, preserving order, zeroes and distinct energies', async () => {
+  it('projects exactly the nine search nutrient IDs, preserving order, zeroes, and distinct energy and fiber measures', async () => {
     const entries = [
       { nutrientId: 1089, nutrientName: 'Iron, Fe', value: 0.593, unitName: 'MG' },
       { nutrientId: 1004, nutrientName: 'Total lipid (fat)', value: 7.16, unitName: 'G' },
@@ -131,6 +131,18 @@ describe('search and serving over real FdcService', () => {
       { nutrientId: 1008, nutrientName: 'Energy', value: 120, unitName: 'KCAL' },
       { nutrientId: 1062, nutrientName: 'Energy', value: 502, unitName: 'kJ' },
       { nutrientId: 1079, nutrientName: 'Fiber, total dietary', value: 0, unitName: 'G' },
+      {
+        nutrientId: 2033,
+        nutrientName: 'Total dietary fiber (AOAC 2011.25)',
+        value: 6.69,
+        unitName: 'G',
+      },
+      {
+        nutrientId: 2038,
+        nutrientName: 'High Molecular Weight Dietary Fiber (HMWDF)',
+        value: 5.1,
+        unitName: 'G',
+      },
       { nutrientId: 2000, nutrientName: 'Total Sugars', value: 0.99, unitName: 'G' },
     ];
     search.foods = [
@@ -155,6 +167,7 @@ describe('search and serving over real FdcService', () => {
             { id: 1008, name: 'Energy', amount: 120, unit: 'KCAL' },
             { id: 1062, name: 'Energy', amount: 502, unit: 'kJ' },
             { id: 1079, name: 'Fiber, total dietary', amount: 0, unit: 'G' },
+            { id: 2033, name: 'Total dietary fiber (AOAC 2011.25)', amount: 6.69, unit: 'G' },
           ],
         },
       ],
@@ -162,6 +175,8 @@ describe('search and serving over real FdcService', () => {
     const text = firstText(result.content);
     expect(text).not.toContain('Iron');
     expect(text).not.toContain('Sugars');
+    expect(text).not.toContain('HMWDF');
+    expect(text).toContain('Total dietary fiber (AOAC 2011.25) (ID:2033): 6.69G');
     expect(text).toContain('Energy (Atwater General Factors) (ID:2047): 133KCAL');
     expect(text).toContain('Energy (Atwater Specific Factors) (ID:2048): 138KCAL');
     expect(text).toContain('Energy (ID:1062): 502kJ');
@@ -185,9 +200,7 @@ describe('search and serving over real FdcService', () => {
       foods: [],
       notice: expect.stringContaining('pageNumber: 348'),
     });
-    const text = result.content
-      .map((block) => (block.type === 'text' ? block.text : ''))
-      .join('\n');
+    const text = allText(result.content);
     expect(text).toContain('page 400 of 348');
     expect(text).toContain('1–348');
     expect(text).not.toContain('spelling');
@@ -319,9 +332,7 @@ describe('search and serving over real FdcService', () => {
     expect((result.structuredContent as { servingInfo: object }).servingInfo).not.toHaveProperty(
       'amount',
     );
-    const text = result.content
-      .map((block) => (block.type === 'text' ? block.text : ''))
-      .join('\n');
+    const text = allText(result.content);
     // servingInfo is the label here, so it is not repeated as its own line
     expect(text).not.toContain('**Label serving:**');
     expect(text).not.toMatch(/^>/m);

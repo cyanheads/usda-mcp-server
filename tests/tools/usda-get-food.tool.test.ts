@@ -3,15 +3,17 @@
  * @module tests/tools/usda-get-food.tool.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError, timeout } from '@cyanheads/mcp-ts-core/errors';
 import {
+  createFetchMock,
   createMockContext,
   type FetchMockHarness,
   runToolContract,
 } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaGetFood } from '@/mcp-server/tools/definitions/usda-get-food.tool.js';
-import type { FoodDetail } from '@/services/fdc/types.js';
+import type { FoodDetail, RawFoodDetail } from '@/services/fdc/types.js';
 import { createFdcFake } from '../fdc-fake.js';
 import { allText, fdcHttpError, firstText } from '../helpers.js';
 
@@ -888,7 +890,7 @@ describe('usdaGetFood', () => {
           { id: 1003, amount: 11.1036 },
         ],
       });
-      expect(firstText(result.content)).toContain('- **Energy** (ID: 1008, SR#: 208): 290.32 kcal');
+      expect(firstText(result.content)).toContain('- **Energy** (ID: 1008, SR#: 208): 290.32 KCAL');
     });
   });
 
@@ -919,6 +921,79 @@ describe('usdaGetFood', () => {
 
       expect(result.structuredContent).toMatchObject({ foodCategory: category });
       expect(firstText(result.content)).toContain(`**Category:** ${category}`);
+    });
+  });
+
+  /** Detail units and dates read as search and the nutrient reference spell them. */
+  describe('unit spelling and publication date over the real FdcService', () => {
+    useRealFdcService();
+
+    /** FDC 171477's record as FDC sends it, cut to one nutrient per unit spelling. */
+    const ROAST_CHICKEN: RawFoodDetail = {
+      fdcId: 171477,
+      description: 'Chicken, broilers or fryers, breast, meat only, cooked, roasted',
+      dataType: 'SR Legacy',
+      publicationDate: '4/1/2019',
+      foodNutrients: [
+        { nutrient: { id: 1051, number: '255', name: 'Water', unitName: 'g' }, amount: 65.26 },
+        { nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' }, amount: 165 },
+        { nutrient: { id: 1062, number: '268', name: 'Energy', unitName: 'kJ' }, amount: 690 },
+        { nutrient: { id: 1087, number: '301', name: 'Calcium, Ca', unitName: 'mg' }, amount: 15 },
+        {
+          nutrient: { id: 1103, number: '317', name: 'Selenium, Se', unitName: '\u{00B5}g' },
+          amount: 27.6,
+        },
+        {
+          nutrient: { id: 1104, number: '318', name: 'Vitamin A, IU', unitName: 'IU' },
+          amount: 21,
+        },
+      ],
+    };
+
+    it('returns the date as YYYY-MM-DD on both surfaces', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 168421 });
+
+      expect(result.structuredContent).toMatchObject({ publicationDate: '2019-04-01' });
+      expect(firstText(result.content).split('\n')).toContain('**Published:** 2019-04-01');
+    });
+
+    it('spells each unit as search does on both surfaces, passing IU and kJ through', async () => {
+      const upstream = createFetchMock([
+        {
+          method: 'GET',
+          match: (request) => new URL(request.url).pathname === '/fdc/v1/food/171477',
+          respond: () => Response.json(ROAST_CHICKEN),
+        },
+      ]);
+      upstream.install();
+      try {
+        const result = await runToolContract(usdaGetFood, { fdcId: 171477 });
+
+        const { nutrients } = result.structuredContent as {
+          nutrients: Array<{ id: number; unit: string }>;
+        };
+        expect(nutrients.map((n) => [n.id, n.unit])).toEqual([
+          [1051, 'G'],
+          [1008, 'KCAL'],
+          [1062, 'kJ'],
+          [1087, 'MG'],
+          [1103, 'UG'],
+          [1104, 'IU'],
+        ]);
+        const lines = firstText(result.content).split('\n');
+        expect(lines).toEqual(
+          expect.arrayContaining([
+            '- **Water** (ID: 1051, SR#: 255): 65.26 G',
+            '- **Energy** (ID: 1008, SR#: 208): 165 KCAL',
+            '- **Energy** (ID: 1062, SR#: 268): 690 kJ',
+            '- **Calcium, Ca** (ID: 1087, SR#: 301): 15 MG',
+            '- **Selenium, Se** (ID: 1103, SR#: 317): 27.6 UG',
+            '- **Vitamin A, IU** (ID: 1104, SR#: 318): 21 IU',
+          ]),
+        );
+      } finally {
+        upstream.restore();
+      }
     });
   });
 
@@ -983,5 +1058,386 @@ describe('usdaGetFood', () => {
         expect(firstText(result.content)).not.toContain('Missing nutrients');
       });
     });
+  });
+
+  it('escapes the data type, SR number, unit, and publication date in content[] while structuredContent keeps them as sent', async () => {
+    const service = await getServiceMock();
+    service.getFoodDetail.mockResolvedValue({
+      ...MOCK_FOOD_DETAIL,
+      dataType: 'SR|Legacy*',
+      publicationDate: '2019-04-01 *rev*',
+      nutrients: [{ id: 1003, name: 'Protein', number: '20*3', amount: 22.5, unit: 'mg|x*' }],
+    });
+    const result = await runToolContract(usdaGetFood, { fdcId: 171077 });
+
+    expect(result.structuredContent).toMatchObject({
+      dataType: 'SR|Legacy*',
+      publicationDate: '2019-04-01 *rev*',
+      nutrients: [{ id: 1003, number: '20*3', unit: 'mg|x*' }],
+    });
+    const text = firstText(result.content);
+    const lines = text.split('\n');
+    expect(text).toContain(' | **Type:** SR\\|Legacy\\*\n');
+    expect(lines).toContain('**Published:** 2019-04-01 \\*rev\\*');
+    expect(lines).toContain('- **Protein** (ID: 1003, SR#: 20\\*3): 22.5 mg\\|x\\*');
+  });
+
+  it('leaves the SR# segment out of content[] for a nutrient FDC gives no legacy number', async () => {
+    const service = await getServiceMock();
+    service.getFoodDetail.mockResolvedValue({
+      ...MOCK_FOOD_DETAIL,
+      nutrients: [
+        { id: 2058, name: 'Beta-glucan', number: '', amount: 0.9167, unit: 'G' },
+        { id: 1003, name: 'Protein', number: '203', amount: 22.5, unit: 'G' },
+      ],
+    });
+    const result = await runToolContract(usdaGetFood, { fdcId: 171077 });
+
+    expect(result.structuredContent).toMatchObject({
+      nutrients: [
+        { id: 2058, number: '' },
+        { id: 1003, number: '203' },
+      ],
+    });
+    const lines = firstText(result.content).split('\n');
+    expect(lines).toContain('- **Beta-glucan** (ID: 2058): 0.9167 G');
+    expect(lines).toContain('- **Protein** (ID: 1003, SR#: 203): 22.5 G');
+  });
+
+  describe('provenance input', () => {
+    it('defaults to false and advertises that default', () => {
+      expect(usdaGetFood.input.parse({ fdcId: 1 }).provenance).toBe(false);
+      expect(z.toJSONSchema(usdaGetFood.input).properties?.provenance).toMatchObject({
+        type: 'boolean',
+        default: false,
+      });
+    });
+
+    it('rejects a value that is not a boolean', () => {
+      expect(() => usdaGetFood.input.parse({ fdcId: 1, provenance: 'true' })).toThrow();
+    });
+
+    it.each([
+      ['omitted', {}, false],
+      ['false', { provenance: false }, false],
+      ['true', { provenance: true }, true],
+    ])('asks the service for provenance when %s', async (_label, flag, provenance) => {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockClear();
+      const ctx = createMockContext({ errors: usdaGetFood.errors });
+      await usdaGetFood.handler(usdaGetFood.input.parse({ fdcId: 171077, ...flag }), ctx);
+
+      expect(service.getFoodDetail).toHaveBeenCalledExactlyOnceWith(171077, undefined, ctx, {
+        provenance,
+      });
+    });
+  });
+
+  /**
+   * With provenance=true each nutrient carries what FDC sends about its value
+   * on both surfaces, the sample spread scaled with amount; without it, both
+   * surfaces stay exactly as they were.
+   */
+  describe('nutrient provenance over the real FdcService', () => {
+    useRealFdcService();
+
+    type Result = Awaited<ReturnType<typeof runToolContract>>;
+    type Nutrient = Record<string, unknown> & { id: number };
+    const nutrientsOf = (result: Result) =>
+      (result.structuredContent as { nutrients: Nutrient[] }).nutrients;
+    const nutrientLines = (result: Result) =>
+      firstText(result.content)
+        .split('\n')
+        .filter((line) => line.startsWith('- **'));
+    const ANALYTICAL = {
+      code: 'A',
+      description: 'Analytical',
+      source: 'Analytical or derived from analytical',
+    };
+    const ASSUMED_ZERO = {
+      code: 'Z',
+      description:
+        'Assumed zero (Insignificant amount or not naturally occurring in a food, such as fiber in meat)',
+      source: 'Assumed zero',
+    };
+
+    it('reads roasted chicken (SR Legacy): assumed zeros, a bare sample count, no spread', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 171477, provenance: true });
+
+      expect(result.isError).toBeFalsy();
+      expect(nutrientsOf(result)).toStrictEqual([
+        {
+          id: 1008,
+          name: 'Energy',
+          number: '208',
+          amount: 165,
+          unit: 'KCAL',
+          derivation: { code: 'NC', description: 'Calculated', source: 'Calculated or imputed' },
+          dataPoints: 0,
+        },
+        { id: 1003, name: 'Protein', number: '203', amount: 31.02, unit: 'G', dataPoints: 16 },
+        {
+          id: 1005,
+          name: 'Carbohydrate, by difference',
+          number: '205',
+          amount: 0,
+          unit: 'G',
+          derivation: ASSUMED_ZERO,
+          dataPoints: 0,
+        },
+        {
+          id: 1079,
+          name: 'Fiber, total dietary',
+          number: '291',
+          amount: 0,
+          unit: 'G',
+          derivation: ASSUMED_ZERO,
+          dataPoints: 0,
+        },
+        {
+          id: 1103,
+          name: 'Selenium, Se',
+          number: '317',
+          amount: 27.6,
+          unit: 'UG',
+          derivation: ANALYTICAL,
+          dataPoints: 20,
+        },
+      ]);
+      expect(nutrientLines(result)).toEqual([
+        '- **Energy** (ID: 1008, SR#: 208): 165 KCAL — NC: Calculated; source: Calculated or imputed; n=0',
+        '- **Protein** (ID: 1003, SR#: 203): 31.02 G — n=16',
+        '- **Carbohydrate, by difference** (ID: 1005, SR#: 205): 0 G — Z: Assumed zero (Insignificant amount or not naturally occurring in a food, such as fiber in meat); source: Assumed zero; n=0',
+        '- **Fiber, total dietary** (ID: 1079, SR#: 291): 0 G — Z: Assumed zero (Insignificant amount or not naturally occurring in a food, such as fiber in meat); source: Assumed zero; n=0',
+        '- **Selenium, Se** (ID: 1103, SR#: 317): 27.6 UG — A: Analytical; source: Analytical or derived from analytical; n=20',
+      ]);
+    });
+
+    it('reads Foundation kale: calcium analytical from 5 samples, energy calculated with no count', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 323505, provenance: true });
+
+      const nutrients = nutrientsOf(result);
+      expect(nutrients.find((n) => n.id === 1087)).toStrictEqual({
+        id: 1087,
+        name: 'Calcium, Ca',
+        number: '301',
+        amount: 254,
+        unit: 'MG',
+        derivation: ANALYTICAL,
+        dataPoints: 5,
+        min: 203,
+        max: 281,
+        median: 264,
+      });
+      expect(nutrients.find((n) => n.id === 1008)).toStrictEqual({
+        id: 1008,
+        name: 'Energy',
+        number: '208',
+        amount: 35,
+        unit: 'KCAL',
+        derivation: { code: 'NC', description: 'Calculated', source: 'Calculated or imputed' },
+      });
+      expect(nutrientLines(result)).toEqual([
+        '- **Energy** (ID: 1008, SR#: 208): 35 KCAL — NC: Calculated; source: Calculated or imputed',
+        '- **Protein** (ID: 1003, SR#: 203): 2.92 G — NC: Calculated; source: Calculated or imputed; range 2.25–3.81; median 3.06',
+        '- **Fiber, total dietary** (ID: 1079, SR#: 291): 4.1 G — A: Analytical; source: Analytical or derived from analytical; n=2; range 4–4.2; median 4.1',
+        '- **Sugars, Total** (ID: 1063, SR#: 269.3): 0.8 G — AS: Summed; source: Analytical or derived from analytical',
+        '- **Sucrose** (ID: 1010, SR#: 210): 0 G — A: Analytical; source: Analytical or derived from analytical; n=2; range 0–0; median 0',
+        '- **Calcium, Ca** (ID: 1087, SR#: 301): 254 MG — A: Analytical; source: Analytical or derived from analytical; n=5; range 203–281; median 264',
+      ]);
+    });
+
+    it('scales min, max, and median with amount to 200 g, leaving dataPoints a count', async () => {
+      const result = await runToolContract(usdaGetFood, {
+        fdcId: 323505,
+        provenance: true,
+        quantity: 200,
+        unit: 'g',
+      });
+
+      expect(
+        nutrientsOf(result).map(({ id, amount, dataPoints, min, max, median }) => ({
+          id,
+          amount,
+          dataPoints,
+          min,
+          max,
+          median,
+        })),
+      ).toEqual([
+        { id: 1008, amount: 70 },
+        { id: 1003, amount: 5.84, min: 4.5, max: 7.62, median: 6.12 },
+        { id: 1079, amount: 8.2, dataPoints: 2, min: 8, max: 8.4, median: 8.2 },
+        { id: 1063, amount: 1.6 },
+        { id: 1010, amount: 0, dataPoints: 2, min: 0, max: 0, median: 0 },
+        { id: 1087, amount: 508, dataPoints: 5, min: 406, max: 562, median: 528 },
+      ]);
+      expect(nutrientLines(result)).toContain(
+        '- **Calcium, Ca** (ID: 1087, SR#: 301): 508 MG — A: Analytical; source: Analytical or derived from analytical; n=5; range 406–562; median 528',
+      );
+    });
+
+    it('rounds the scaled spread to the same 4 decimals as amount', async () => {
+      // 1 oz = 28.3495 g: 254 → 72.007730, 203 → 57.549485, 281 → 79.662095, 264 → 74.842680
+      const result = await runToolContract(usdaGetFood, {
+        fdcId: 323505,
+        provenance: true,
+        unit: 'oz',
+        quantity: 1,
+        nutrients: [1087],
+      });
+
+      expect(nutrientsOf(result)).toMatchObject([
+        { id: 1087, amount: 72.0077, dataPoints: 5, min: 57.5495, max: 79.6621, median: 74.8427 },
+      ]);
+      expect(nutrientLines(result)).toEqual([
+        '- **Calcium, Ca** (ID: 1087, SR#: 301): 72.0077 MG — A: Analytical; source: Analytical or derived from analytical; n=5; range 57.5495–79.6621; median 74.8427',
+      ]);
+    });
+
+    it('reads a Branded food: the manufacturer source on every value, no count or spread', async () => {
+      const result = await runToolContract(usdaGetFood, { fdcId: 759418, provenance: true });
+
+      const nutrients = nutrientsOf(result);
+      expect(nutrients.map((n) => (n.derivation as { source?: string }).source)).toEqual([
+        "Manufacturer's analytical; partial documentation",
+        "Manufacturer's analytical; partial documentation",
+        "Manufacturer's analytical; partial documentation",
+      ]);
+      expect(
+        nutrients.flatMap((n) => ['dataPoints', 'min', 'max', 'median'].filter((k) => k in n)),
+      ).toEqual([]);
+      expect(nutrientLines(result)).toContain(
+        "- **Calcium, Ca** (ID: 1087, SR#: 301): 385 MG — LCCD: Calculated from a daily value percentage per serving size measure; source: Manufacturer's analytical; partial documentation",
+      );
+    });
+
+    it('adds nothing to a Survey (FNDDS) food, whose output matches the default call', async () => {
+      const asked = await runToolContract(usdaGetFood, { fdcId: 2708522, provenance: true });
+      const plain = await runToolContract(usdaGetFood, { fdcId: 2708522 });
+
+      expect(nutrientsOf(asked)).toStrictEqual([
+        { id: 1008, name: 'Energy', number: '208', amount: 257, unit: 'KCAL' },
+        { id: 1003, name: 'Protein', number: '203', amount: 16.7, unit: 'G' },
+      ]);
+      expect(asked.structuredContent).toStrictEqual(plain.structuredContent);
+      expect(asked.content).toStrictEqual(plain.content);
+    });
+
+    it('returns only the filtered rows, each with its own fields, and the same missingNutrients', async () => {
+      const result = await runToolContract(usdaGetFood, {
+        fdcId: 171477,
+        provenance: true,
+        nutrients: [1005, 1003, 99999],
+      });
+
+      expect(result.structuredContent).toMatchObject({ missingNutrients: [99999] });
+      expect(nutrientsOf(result)).toStrictEqual([
+        { id: 1003, name: 'Protein', number: '203', amount: 31.02, unit: 'G', dataPoints: 16 },
+        {
+          id: 1005,
+          name: 'Carbohydrate, by difference',
+          number: '205',
+          amount: 0,
+          unit: 'G',
+          derivation: ASSUMED_ZERO,
+          dataPoints: 0,
+        },
+      ]);
+      expect(nutrientLines(result)).toEqual([
+        '- **Protein** (ID: 1003, SR#: 203): 31.02 G — n=16',
+        '- **Carbohydrate, by difference** (ID: 1005, SR#: 205): 0 G — Z: Assumed zero (Insignificant amount or not naturally occurring in a food, such as fiber in meat); source: Assumed zero; n=0',
+      ]);
+    });
+
+    /** Characterization: both records carry FDC's provenance fields, and neither surface shows them by default. */
+    it.each([
+      [
+        171477,
+        {
+          fdcId: 171477,
+          description: 'Chicken, broilers or fryers, breast, meat only, cooked, roasted',
+          dataType: 'SR Legacy',
+          basisUnit: 'g',
+          foodCategory: 'Poultry Products',
+          publicationDate: '2019-04-01',
+          servingInfo: { description: '1 cup, chopped or diced', gramWeight: 140, amount: 1 },
+          allPortions: [{ description: '1 cup, chopped or diced', gramWeight: 140, amount: 1 }],
+          nutrients: [
+            { id: 1008, name: 'Energy', number: '208', amount: 165, unit: 'KCAL' },
+            { id: 1003, name: 'Protein', number: '203', amount: 31.02, unit: 'G' },
+            { id: 1005, name: 'Carbohydrate, by difference', number: '205', amount: 0, unit: 'G' },
+            { id: 1079, name: 'Fiber, total dietary', number: '291', amount: 0, unit: 'G' },
+            { id: 1103, name: 'Selenium, Se', number: '317', amount: 27.6, unit: 'UG' },
+          ],
+        },
+        [
+          '## Chicken, broilers or fryers, breast, meat only, cooked, roasted',
+          '**FDC ID:** 171477 | **Type:** SR Legacy',
+          '**Category:** Poultry Products',
+          '**Published:** 2019-04-01',
+          '',
+          '**Basis:** per 100g',
+          '**Serving:** 1 cup, chopped or diced = 140g (amount: 1)',
+          '**All portions:** 1 cup, chopped or diced (140g, amount: 1)',
+          '',
+          '### Nutrients',
+          '- **Energy** (ID: 1008, SR#: 208): 165 KCAL',
+          '- **Protein** (ID: 1003, SR#: 203): 31.02 G',
+          '- **Carbohydrate, by difference** (ID: 1005, SR#: 205): 0 G',
+          '- **Fiber, total dietary** (ID: 1079, SR#: 291): 0 G',
+          '- **Selenium, Se** (ID: 1103, SR#: 317): 27.6 UG',
+        ],
+      ],
+      [
+        323505,
+        {
+          fdcId: 323505,
+          description: 'Kale, raw',
+          dataType: 'Foundation',
+          basisUnit: 'g',
+          foodCategory: 'Vegetables and Vegetable Products',
+          publicationDate: '2019-04-01',
+          servingInfo: { description: '1 cup pieces of ~1"', gramWeight: 20.6, amount: 1 },
+          allPortions: [{ description: '1 cup pieces of ~1"', gramWeight: 20.6, amount: 1 }],
+          nutrients: [
+            { id: 1008, name: 'Energy', number: '208', amount: 35, unit: 'KCAL' },
+            { id: 1003, name: 'Protein', number: '203', amount: 2.92, unit: 'G' },
+            { id: 1079, name: 'Fiber, total dietary', number: '291', amount: 4.1, unit: 'G' },
+            { id: 1063, name: 'Sugars, Total', number: '269.3', amount: 0.8, unit: 'G' },
+            { id: 1010, name: 'Sucrose', number: '210', amount: 0, unit: 'G' },
+            { id: 1087, name: 'Calcium, Ca', number: '301', amount: 254, unit: 'MG' },
+          ],
+        },
+        [
+          '## Kale, raw',
+          '**FDC ID:** 323505 | **Type:** Foundation',
+          '**Category:** Vegetables and Vegetable Products',
+          '**Published:** 2019-04-01',
+          '',
+          '**Basis:** per 100g',
+          '**Serving:** 1 cup pieces of \\~1" = 20.6g (amount: 1)',
+          '**All portions:** 1 cup pieces of \\~1" (20.6g, amount: 1)',
+          '',
+          '### Nutrients',
+          '- **Energy** (ID: 1008, SR#: 208): 35 KCAL',
+          '- **Protein** (ID: 1003, SR#: 203): 2.92 G',
+          '- **Fiber, total dietary** (ID: 1079, SR#: 291): 4.1 G',
+          '- **Sugars, Total** (ID: 1063, SR#: 269.3): 0.8 G',
+          '- **Sucrose** (ID: 1010, SR#: 210): 0 G',
+          '- **Calcium, Ca** (ID: 1087, SR#: 301): 254 MG',
+        ],
+      ],
+    ])(
+      'keeps FDC ID %i byte-identical with provenance omitted or false',
+      async (fdcId, structured, lines) => {
+        for (const flag of [{}, { provenance: false }]) {
+          const result = await runToolContract(usdaGetFood, { fdcId, ...flag });
+
+          expect(result.structuredContent).toStrictEqual(structured);
+          expect(result.content).toStrictEqual([{ type: 'text', text: lines.join('\n') }]);
+        }
+      },
+    );
   });
 });

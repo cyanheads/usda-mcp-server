@@ -43,8 +43,8 @@
     },
     "USDA_CLAMP_LIMITS": {
       "type": "string",
-      "title": "Clamp batch size",
-      "description": "true: usda_get_foods fetches the first 20 distinct FDC IDs of a larger request and returns the rest as deferredIds. false: it rejects a request with more than 20 IDs.",
+      "title": "Clamp request limits",
+      "description": "true: an over-limit request is served up to its cap with a notice. usda_get_foods fetches the first 20 distinct FDC IDs and usda_compare_foods compares the first 5, returning the rest as deferredIds; usda_search_foods serves a pageSize above 200 at 200. false: more than 20 usda_get_foods entries, more than 5 usda_compare_foods entries, or a pageSize above 200 is rejected.",
       "default": "true"
     }
   }

@@ -16,7 +16,9 @@
  * FNDDS `portionDescription`, food-code modifiers, and `wweiaFoodCategory`;
  * SR Legacy and Foundation portion amounts and measure units; Foundation
  * records that report energy only as Atwater estimates (2047, 2048) and
- * sugars only as 1063; Branded labels in GRM and in IU. Portions keep FDC's
+ * sugars only as 1063; Branded labels in GRM and in IU; and the per-nutrient
+ * provenance fields (derivation, sample count, spread) as SR Legacy,
+ * Foundation, and Branded records each send them. Portions keep FDC's
  * array order and `sequenceNumber`, which disagree on some records
  * (noodles, brick cheese, drumstick, cottage cheese, oranges); a record's
  * portion list may be a subset of what FDC sends.
@@ -657,6 +659,250 @@ export const RAW_COOKIE: RawFoodDetail = {
   ],
 };
 
+/** FDC's `foodNutrientDerivation` records the provenance fixtures below carry, as sent. */
+const ANALYTICAL = {
+  code: 'A',
+  description: 'Analytical',
+  foodNutrientSource: { code: '1', description: 'Analytical or derived from analytical' },
+};
+const CALCULATED = {
+  code: 'NC',
+  description: 'Calculated',
+  foodNutrientSource: { code: '4', description: 'Calculated or imputed' },
+};
+const SUMMED = {
+  code: 'AS',
+  description: 'Summed',
+  foodNutrientSource: { code: '1', description: 'Analytical or derived from analytical' },
+};
+const ASSUMED_ZERO = {
+  code: 'Z',
+  description:
+    'Assumed zero (Insignificant amount or not naturally occurring in a food, such as fiber in meat)',
+  foodNutrientSource: { code: '7', description: 'Assumed zero' },
+};
+/** The source every Branded derivation names. */
+const MANUFACTURER = {
+  code: '12',
+  description: "Manufacturer's analytical; partial documentation",
+};
+
+/**
+ * Roasted chicken breast (SR Legacy), with FDC's provenance fields. Every value
+ * carries `dataPoints` (0 on calculated and assumed ones), only some carry a
+ * derivation — protein, measured from 16 samples, has none — and none carries
+ * `min`, `max`, or `median`.
+ */
+export const RAW_ROAST_CHICKEN: RawFoodDetail = {
+  fdcId: 171477,
+  description: 'Chicken, broilers or fryers, breast, meat only, cooked, roasted',
+  dataType: 'SR Legacy',
+  publicationDate: '4/1/2019',
+  foodCategory: { description: 'Poultry Products' },
+  foodPortions: [
+    {
+      amount: 1,
+      gramWeight: 140,
+      modifier: 'cup, chopped or diced',
+      measureUnit: UNDETERMINED,
+      sequenceNumber: 1,
+    },
+  ],
+  foodNutrients: [
+    {
+      nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' },
+      foodNutrientDerivation: CALCULATED,
+      amount: 165,
+      dataPoints: 0,
+    },
+    {
+      nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' },
+      amount: 31.02,
+      dataPoints: 16,
+    },
+    {
+      nutrient: { id: 1005, number: '205', name: 'Carbohydrate, by difference', unitName: 'g' },
+      foodNutrientDerivation: ASSUMED_ZERO,
+      amount: 0,
+      dataPoints: 0,
+    },
+    {
+      nutrient: { id: 1079, number: '291', name: 'Fiber, total dietary', unitName: 'g' },
+      foodNutrientDerivation: ASSUMED_ZERO,
+      amount: 0,
+      dataPoints: 0,
+    },
+    {
+      nutrient: { id: 1103, number: '317', name: 'Selenium, Se', unitName: '\u{00B5}g' },
+      foodNutrientDerivation: ANALYTICAL,
+      amount: 27.6,
+      dataPoints: 20,
+    },
+  ],
+};
+
+/**
+ * Kielbasa (SR Legacy), with FDC's provenance fields: analytical values carry
+ * `min` and `max` but no `median`, which SR Legacy never sends.
+ */
+export const RAW_KIELBASA: RawFoodDetail = {
+  fdcId: 173879,
+  description: 'Kielbasa, fully cooked, unheated',
+  dataType: 'SR Legacy',
+  publicationDate: '4/1/2019',
+  foodCategory: { description: 'Sausages and Luncheon Meats' },
+  foodPortions: [
+    { amount: 3, gramWeight: 85, modifier: 'oz', measureUnit: UNDETERMINED, sequenceNumber: 1 },
+  ],
+  foodNutrients: [
+    {
+      nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' },
+      foodNutrientDerivation: CALCULATED,
+      amount: 325,
+      dataPoints: 0,
+    },
+    {
+      nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' },
+      foodNutrientDerivation: ANALYTICAL,
+      amount: 10.84,
+      dataPoints: 15,
+      min: 10.01,
+      max: 13.24,
+    },
+    {
+      nutrient: { id: 1004, number: '204', name: 'Total lipid (fat)', unitName: 'g' },
+      foodNutrientDerivation: ANALYTICAL,
+      amount: 29.63,
+      dataPoints: 15,
+      min: 21.44,
+      max: 32.52,
+    },
+    {
+      nutrient: { id: 1005, number: '205', name: 'Carbohydrate, by difference', unitName: 'g' },
+      foodNutrientDerivation: CALCULATED,
+      amount: 3.72,
+      dataPoints: 0,
+    },
+  ],
+};
+
+/**
+ * Kale, raw (Foundation), with FDC's provenance fields: a derivation on every
+ * value, `dataPoints` only on analytical ones, and a sample spread on most —
+ * protein is calculated yet carries one. Sucrose's spread is all zeros.
+ */
+export const RAW_KALE_FOUNDATION: RawFoodDetail = {
+  fdcId: 323505,
+  description: 'Kale, raw',
+  dataType: 'Foundation',
+  publicationDate: '4/1/2019',
+  foodCategory: { description: 'Vegetables and Vegetable Products' },
+  foodPortions: [
+    {
+      amount: 1,
+      gramWeight: 20.6,
+      modifier: 'pieces of ~1"',
+      measureUnit: { id: 1000, name: 'cup', abbreviation: 'cup' },
+      sequenceNumber: 1,
+    },
+  ],
+  foodNutrients: [
+    {
+      nutrient: { id: 1008, number: '208', name: 'Energy', unitName: 'kcal' },
+      foodNutrientDerivation: CALCULATED,
+      amount: 35,
+    },
+    {
+      nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' },
+      foodNutrientDerivation: CALCULATED,
+      amount: 2.92,
+      max: 3.81,
+      min: 2.25,
+      median: 3.06,
+    },
+    {
+      nutrient: { id: 1079, number: '291', name: 'Fiber, total dietary', unitName: 'g' },
+      foodNutrientDerivation: ANALYTICAL,
+      amount: 4.1,
+      dataPoints: 2,
+      max: 4.2,
+      min: 4,
+      median: 4.1,
+    },
+    {
+      nutrient: { id: 1063, number: '269.3', name: 'Sugars, Total', unitName: 'g' },
+      foodNutrientDerivation: SUMMED,
+      amount: 0.8,
+    },
+    {
+      nutrient: { id: 1010, number: '210', name: 'Sucrose', unitName: 'g' },
+      foodNutrientDerivation: ANALYTICAL,
+      amount: 0,
+      dataPoints: 2,
+      max: 0,
+      min: 0,
+      median: 0,
+    },
+    {
+      nutrient: { id: 1087, number: '301', name: 'Calcium, Ca', unitName: 'mg' },
+      foodNutrientDerivation: ANALYTICAL,
+      amount: 254,
+      dataPoints: 5,
+      max: 281,
+      min: 203,
+      median: 264,
+    },
+  ],
+};
+
+/**
+ * Cheerios (Branded), with FDC's provenance fields: every value carries a
+ * label derivation from the manufacturer's source, and none carries
+ * `dataPoints`, `min`, `max`, or `median`.
+ */
+export const RAW_CHEERIOS: RawFoodDetail = {
+  fdcId: 759418,
+  description: 'Cheerios Cereal',
+  dataType: 'Branded',
+  publicationDate: '2/27/2020',
+  brandOwner: 'GENERAL MILLS SALES INC.',
+  brandedFoodCategory: 'Processed Cereal Products',
+  gtinUpc: '00016000503687',
+  servingSize: 26,
+  servingSizeUnit: 'g',
+  householdServingFullText: '1 pouch (26g)',
+  foodPortions: [],
+  foodNutrients: [
+    {
+      nutrient: { id: 1082, number: '295', name: 'Fiber, soluble', unitName: 'g' },
+      foodNutrientDerivation: {
+        code: 'LCSL',
+        description: 'Calculated from a less than value per serving size measure',
+        foodNutrientSource: MANUFACTURER,
+      },
+      amount: 4,
+    },
+    {
+      nutrient: { id: 1087, number: '301', name: 'Calcium, Ca', unitName: 'mg' },
+      foodNutrientDerivation: {
+        code: 'LCCD',
+        description: 'Calculated from a daily value percentage per serving size measure',
+        foodNutrientSource: MANUFACTURER,
+      },
+      amount: 385,
+    },
+    {
+      nutrient: { id: 1003, number: '203', name: 'Protein', unitName: 'g' },
+      foodNutrientDerivation: {
+        code: 'LCSA',
+        description: 'Calculated from an approximate value per serving size measure',
+        foodNutrientSource: MANUFACTURER,
+      },
+      amount: 11.54,
+    },
+  ],
+};
+
 const CATALOG = new Map<number, RawFoodDetail>(
   [
     RAW_KALE,
@@ -678,6 +924,10 @@ const CATALOG = new Map<number, RawFoodDetail>(
     RAW_OLIVE_OIL_SR,
     RAW_CEREAL,
     RAW_COOKIE,
+    RAW_ROAST_CHICKEN,
+    RAW_KIELBASA,
+    RAW_KALE_FOUNDATION,
+    RAW_CHEERIOS,
   ].map((food) => [food.fdcId, food]),
 );
 

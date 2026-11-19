@@ -5,14 +5,35 @@
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, timeout } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import {
+  createMockContext,
+  getEnrichment,
+  type MockContextLogger,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaSearchFoods } from '@/mcp-server/tools/definitions/usda-search-foods.tool.js';
 import { allText, firstText } from '../helpers.js';
 
 const { format } = usdaSearchFoods;
 if (!format) throw new Error('usda_search_foods must declare format()');
+
+/** The `usda.search.clamps` counter the tool creates at module scope, and the arguments of each creation. */
+const clamps = vi.hoisted(() => ({ add: vi.fn(), created: [] as unknown[][] }));
+
+vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>()),
+  /**
+   * Creation is recorded outside the mock's call history: Vitest clears that
+   * history before every test (`clearMocks` defaults on), which erases a call
+   * made while the module loaded.
+   */
+  createCounter: vi.fn((...args: unknown[]) => {
+    clamps.created.push(args);
+    return clamps;
+  }),
+}));
 
 /**
  * Mock the FDC service so tests don't hit the network. The module's constants
@@ -54,6 +75,14 @@ const MOCK_FOOD = {
     { id: 1008, name: 'Energy', amount: 120, unit: 'KCAL' },
     { id: 1003, name: 'Protein', amount: 22.5, unit: 'G' },
   ],
+};
+
+const SALT_ROW = {
+  fdcId: 2000001,
+  description: 'SALT',
+  dataType: 'Branded',
+  basisUnit: 'g',
+  nutrients: [],
 };
 
 const MOCK_SEARCH_RESULT = {
@@ -216,10 +245,12 @@ describe('usdaSearchFoods', () => {
       expect(input.pageNumber).toBe(1);
     });
 
-    it('accepts the declared pageSize edges and rejects one past the cap', () => {
-      expect(usdaSearchFoods.input.parse({ query: 'kale', pageSize: 1 }).pageSize).toBe(1);
-      expect(usdaSearchFoods.input.parse({ query: 'kale', pageSize: 50 }).pageSize).toBe(50);
-      expect(() => usdaSearchFoods.input.parse({ query: 'kale', pageSize: 51 })).toThrow();
+    /** No `.max()`: a pageSize above 200 reaches the handler, which serves it at 200. */
+    it('accepts any pageSize from 1, larger than 200 included, and rejects 0', () => {
+      for (const pageSize of [1, 50, 51, 200, 201, 1000]) {
+        expect(usdaSearchFoods.input.parse({ query: 'kale', pageSize }).pageSize).toBe(pageSize);
+      }
+      expect(() => usdaSearchFoods.input.parse({ query: 'kale', pageSize: 0 })).toThrow();
     });
 
     it('rejects a page number below the 1-based floor', () => {
@@ -355,7 +386,7 @@ describe('usdaSearchFoods', () => {
         {
           fdcId: 999,
           description: 'Crunchy *Star* Bars [Organic]',
-          dataType: 'Branded',
+          dataType: 'Brand|ed*',
           basisUnit: 'g' as const,
           foodCategory: 'Snacks | Bars',
           brandOwner: '<b>Acme</b>',
@@ -363,17 +394,22 @@ describe('usdaSearchFoods', () => {
           servingSize: 40,
           servingSizeUnit: 'g',
           householdServingFullText: '1 bar [large] *',
-          nutrients: [{ id: 1004, name: 'Fat *total* [lipid]', amount: 3, unit: 'G' }],
+          nutrients: [{ id: 1004, name: 'Fat *total* [lipid]', amount: 3, unit: 'G|x*' }],
+          publishedDate: '2020-01-01 *rev*',
         },
       ],
     };
     const text = firstText(format(output));
     expect(text).toContain('### Crunchy \\*Star\\* Bars \\[Organic\\]');
+    expect(text).toContain('**FDC ID:** 999 | **Type:** Brand\\|ed\\*\n');
     expect(text).toContain('**Category:** Snacks \\| Bars');
     expect(text).toContain('**Brand Owner:** \\<b>Acme\\</b>');
     expect(text).toContain('**Brand:** \\*Star\\*');
     expect(text).toContain('**Serving:** 40g (1 bar \\[large\\] \\*)');
-    expect(text).toContain('**Nutrients (per 100g):** Fat \\*total\\* \\[lipid\\] (ID:1004): 3G');
+    expect(text).toContain(
+      '**Nutrients (per 100g):** Fat \\*total\\* \\[lipid\\] (ID:1004): 3G\\|x\\*\n',
+    );
+    expect(text).toContain('**Published:** 2020-01-01 \\*rev\\*\n');
   });
 
   it('handles sparse upstream payload with no optional fields', async () => {
@@ -458,6 +494,20 @@ describe('usdaSearchFoods', () => {
       expect(text).not.toContain('per 100g');
       expect(text).toContain('basisUnit');
     });
+  });
+
+  it('names fiber 2033 (AOAC 2011.25) apart from 1079 in the tool and preview descriptions', () => {
+    const schema = z.toJSONSchema(usdaSearchFoods.output) as unknown as {
+      properties: {
+        foods: { items: { properties: { nutrients: { description: string } } } };
+      };
+    };
+    const preview = schema.properties.foods.items.properties.nutrients.description;
+
+    for (const text of [usdaSearchFoods.description, preview]) {
+      expect(text).toContain('fiber (1079, and 2033 for AOAC 2011.25 total dietary fiber');
+      expect(text).toContain('distinct fiber and energy measures');
+    }
   });
 
   describe('brandOwner and foodCategory filters', () => {
@@ -581,13 +631,6 @@ describe('usdaSearchFoods', () => {
   });
 
   describe('FDC result window', () => {
-    const SALT_ROW = {
-      fdcId: 2000001,
-      description: 'SALT',
-      dataType: 'Branded',
-      basisUnit: 'g',
-      nutrients: [],
-    };
     const RICE_ROW = {
       fdcId: 169704,
       description: 'Rice, brown, long-grain, cooked',
@@ -799,6 +842,304 @@ describe('usdaSearchFoods', () => {
       expect(inputDescription('pageNumber')).toContain('100,000');
       const output = JSON.stringify(z.toJSONSchema(usdaSearchFoods.output));
       expect(output).toMatch(/"totalPages":\{[^}]*100,000/);
+    });
+  });
+
+  describe("pageSize above FDC's 200-row maximum", () => {
+    const CLAMP_1000 =
+      "Requested pageSize 1000 is above FDC's maximum of 200, so pages are served at pageSize 200; currentPage and totalPages count pages of 200.";
+    const WINDOW_AT_200 =
+      'Only the first 100,000 of the 283,963 matching foods are reachable: FDC serves no page past 500 at pageSize 200. Narrow the query or filters to reach the rest.';
+
+    /** The notice-level records the call logged. */
+    function logNotices(ctx: ReturnType<typeof createMockContext>) {
+      return (ctx.log as MockContextLogger).calls.filter((c) => c.level === 'notice');
+    }
+
+    beforeEach(() => {
+      clamps.add.mockClear();
+    });
+
+    it('creates its clamp counter as usda.search.clamps, counted in {calls}', () => {
+      expect(clamps.created).toContainEqual(['usda.search.clamps', expect.any(String), '{calls}']);
+    });
+
+    it.each([1, 50, 51, 200])(
+      'sends pageSize %i unchanged, with no notice, log notice, or count',
+      async (pageSize) => {
+        const service = await getServiceMock();
+        const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+        await usdaSearchFoods.handler(
+          usdaSearchFoods.input.parse({ query: 'apple', pageSize }),
+          ctx,
+        );
+
+        expect(service.searchFoods).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ pageSize, pageNumber: 1 }),
+          ctx,
+        );
+        expect(getEnrichment(ctx)).toEqual({ totalCount: 1 });
+        expect(logNotices(ctx)).toEqual([]);
+        expect(clamps.add).not.toHaveBeenCalled();
+
+        const contract = await runToolContract(usdaSearchFoods, { query: 'apple', pageSize });
+        expect(contract.isError).toBeFalsy();
+        expect(contract.structuredContent).not.toHaveProperty('notice');
+      },
+    );
+
+    it.each([201, 1000])(
+      'serves pageSize %i at 200 and names both sizes on both surfaces',
+      async (requested) => {
+        const service = await getServiceMock();
+        service.searchFoods.mockResolvedValue({
+          totalHits: 25_643,
+          currentPage: 2,
+          totalPages: 129,
+          foods: [MOCK_FOOD],
+        });
+
+        const result = await runToolContract(usdaSearchFoods, {
+          query: 'apple',
+          dataType: ['Branded'],
+          pageSize: requested,
+          pageNumber: 2,
+        });
+
+        // Pages count at 200: page 2 holds foods 201–400.
+        expect(service.searchFoods).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ pageSize: 200, pageNumber: 2 }),
+          expect.anything(),
+        );
+        const notice = `Requested pageSize ${requested} is above FDC's maximum of 200, so pages are served at pageSize 200; currentPage and totalPages count pages of 200.`;
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent).toMatchObject({
+          totalHits: 25_643,
+          currentPage: 2,
+          totalPages: 129,
+          foods: [{ fdcId: 171077 }],
+          notice,
+        });
+        const text = allText(result.content);
+        expect(text).toContain(notice);
+        expect(text).toContain('page 2 of 129');
+      },
+    );
+
+    it('logs one notice with both sizes, logs the search at 200, and adds 1 to the counter', async () => {
+      const ctx = createMockContext({ errors: usdaSearchFoods.errors });
+      await usdaSearchFoods.handler(
+        usdaSearchFoods.input.parse({ query: 'apple', pageSize: 1000 }),
+        ctx,
+      );
+
+      const notices = logNotices(ctx);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.data).toMatchObject({ requested: 1000, applied: 200 });
+      const search = (ctx.log as MockContextLogger).calls.find((c) => c.msg === 'Searching foods');
+      expect(search?.data).toMatchObject({ pageSize: 200 });
+      expect(clamps.add).toHaveBeenCalledExactlyOnceWith(1);
+    });
+
+    it('serves page 101 of a 283,963-match search at 1000, with the clamp ahead of the window', async () => {
+      const service = await getServiceMock();
+      service.searchFoods.mockResolvedValue({
+        totalHits: 283_963,
+        currentPage: 101,
+        totalPages: 1420,
+        foods: [SALT_ROW],
+      });
+
+      const result = await runToolContract(usdaSearchFoods, {
+        query: 'salt',
+        dataType: ['Branded'],
+        pageSize: 1000,
+        pageNumber: 101,
+      });
+
+      // 1000 × 101 is past the window; 200 × 101 is not, so page 101 itself is requested.
+      expect(service.searchFoods).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ pageSize: 200, pageNumber: 101 }),
+        expect.anything(),
+      );
+      const notice = `${CLAMP_1000} ${WINDOW_AT_200}`;
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        currentPage: 101,
+        totalPages: 1420,
+        foods: [{ fdcId: 2000001 }],
+        notice,
+      });
+      expect(allText(result.content)).toContain(notice);
+    });
+
+    it('sends 200 × 500, the last page inside the window, with the window notice alone', async () => {
+      const service = await getServiceMock();
+      service.searchFoods.mockResolvedValue({
+        totalHits: 283_963,
+        currentPage: 500,
+        totalPages: 1420,
+        foods: [SALT_ROW],
+      });
+
+      const result = await runToolContract(usdaSearchFoods, {
+        query: 'salt',
+        dataType: ['Branded'],
+        pageSize: 200,
+        pageNumber: 500,
+      });
+
+      expect(service.searchFoods).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ pageSize: 200, pageNumber: 500 }),
+        expect.anything(),
+      );
+      expect(result.structuredContent).toMatchObject({
+        currentPage: 500,
+        foods: [{ fdcId: 2000001 }],
+        notice: WINDOW_AT_200,
+      });
+      expect(clamps.add).not.toHaveBeenCalled();
+    });
+
+    it('fails 200 × 501 as result_window_exceeded at page 500, with no clamp in the message', async () => {
+      const service = await getServiceMock();
+      service.searchFoods.mockResolvedValue({
+        totalHits: 283_963,
+        currentPage: 1,
+        totalPages: 1420,
+        foods: [SALT_ROW],
+      });
+
+      const result = await runToolContract(usdaSearchFoods, {
+        query: 'salt',
+        dataType: ['Branded'],
+        pageSize: 200,
+        pageNumber: 501,
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          data: { reason: 'result_window_exceeded', pageSize: 200, lastReachablePage: 500 },
+        },
+      });
+      expect(allText(result.content)).not.toContain('Requested pageSize');
+    });
+
+    it('fails 1000 × 501 as result_window_exceeded at 200 on both surfaces, and its hint reaches a page', async () => {
+      const service = await getServiceMock();
+      service.searchFoods.mockResolvedValue({
+        totalHits: 283_963,
+        currentPage: 1,
+        totalPages: 1420,
+        foods: [SALT_ROW],
+      });
+
+      const result = await runToolContract(usdaSearchFoods, {
+        query: 'salt',
+        dataType: ['Branded'],
+        pageSize: 1000,
+        pageNumber: 501,
+      });
+
+      expect(service.searchFoods).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ pageSize: 200, pageNumber: 1 }),
+        expect.anything(),
+      );
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          data: {
+            reason: 'result_window_exceeded',
+            pageSize: 200,
+            pageNumber: 501,
+            totalHits: 283_963,
+            lastReachablePage: 500,
+            recovery: {
+              hint: expect.stringMatching(/^Retry with pageNumber: 500 or lower at pageSize 200,/),
+            },
+          },
+        },
+      });
+      const text = allText(result.content);
+      expect(text).toContain(
+        `Page 501 at pageSize 200 is past the first 100,000 results FDC serves for "salt". Requested pageSize 1000 is above FDC's maximum of 200, so pages are served at pageSize 200.`,
+      );
+      expect(text).toContain('Retry with pageNumber: 500 or lower at pageSize 200');
+
+      // The recovery recipe: send the hint's pageNumber and pageSize back as given.
+      const { hint } = (
+        result.structuredContent as { error: { data: { recovery: { hint: string } } } }
+      ).error.data.recovery;
+      const [, pageNumber, pageSize] =
+        /pageNumber: (\d+) or lower at pageSize (\d+)/.exec(hint) ?? [];
+      service.searchFoods.mockClear();
+      service.searchFoods.mockResolvedValue({
+        totalHits: 283_963,
+        currentPage: 500,
+        totalPages: 1420,
+        foods: [SALT_ROW],
+      });
+      const retry = await runToolContract(usdaSearchFoods, {
+        query: 'salt',
+        dataType: ['Branded'],
+        pageSize: Number(pageSize),
+        pageNumber: Number(pageNumber),
+      });
+
+      expect(service.searchFoods).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ pageSize: 200, pageNumber: 500 }),
+        expect.anything(),
+      );
+      expect(retry.isError).toBeFalsy();
+      expect(retry.structuredContent).toMatchObject({
+        currentPage: 500,
+        foods: [{ fdcId: 2000001 }],
+        notice: WINDOW_AT_200,
+      });
+    });
+
+    it('answers a clamped page past the last page with empty foods, the clamp notice first', async () => {
+      const service = await getServiceMock();
+      service.searchFoods.mockResolvedValue({
+        totalHits: 30,
+        currentPage: 1,
+        totalPages: 1,
+        foods: [],
+      });
+
+      const result = await runToolContract(usdaSearchFoods, {
+        query: 'kale',
+        pageSize: 1000,
+        pageNumber: 3,
+      });
+
+      expect(service.searchFoods).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ pageSize: 200, pageNumber: 3 }),
+        expect.anything(),
+      );
+      const notice = `${CLAMP_1000} Requested page 3 is past the end. Valid pages are 1–1; retry with pageNumber: 1.`;
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        totalHits: 30,
+        currentPage: 3,
+        totalPages: 1,
+        foods: [],
+        notice,
+      });
+      expect(allText(result.content)).toContain(notice);
+    });
+
+    it('states the cap on pageSize and the size served on pageNumber, totalPages, and notice', () => {
+      expect(inputDescription('pageSize')).toBe(
+        'Number of results per page. Default 10; a larger value returns at most 200 and says so (a server configured with strict limits rejects more than 200).',
+      );
+      expect(inputDescription('pageNumber')).toContain('counted at the pageSize served');
+      const output = JSON.stringify(z.toJSONSchema(usdaSearchFoods.output));
+      expect(output).toMatch(/"totalPages":\{[^}]*pageSize served/);
+      expect(usdaSearchFoods.enrichment?.notice?.description).toContain(
+        "above FDC's maximum of 200",
+      );
     });
   });
 
@@ -1202,5 +1543,65 @@ describe('usdaSearchFoods', () => {
       },
     });
     expect(allText(result.content)).toContain(`Recovery: ${hint}`);
+  });
+});
+
+describe('usdaSearchFoods pageSize under USDA_CLAMP_LIMITS', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  /** A fresh copy of the tool, so its config reads the stubbed variable. */
+  async function loadWith(value: string) {
+    vi.stubEnv('USDA_CLAMP_LIMITS', value);
+    vi.resetModules();
+    return (await import('@/mcp-server/tools/definitions/usda-search-foods.tool.js'))
+      .usdaSearchFoods;
+  }
+
+  it('false accepts 200 and rejects 201 as invalid_arguments, naming the 200 bound', async () => {
+    const strict = await loadWith('false');
+
+    expect(strict.input.parse({ query: 'apple', pageSize: 200 }).pageSize).toBe(200);
+    const result = await runToolContract(strict, { query: 'apple', pageSize: 201 });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.InvalidParams, data: { reason: 'invalid_arguments' } },
+    });
+    expect(firstText(result.content)).toContain('pageSize: Too big: expected number to be <=200');
+    expect(
+      strict.input
+        .safeParse({ query: 'apple', pageSize: 1000 })
+        .error?.issues.map((i) => i.message),
+    ).toEqual(['Too big: expected number to be <=200']);
+  });
+
+  it.each(['true', ''])('%j accepts 201 and 1000, like an unset variable', async (value) => {
+    const tool = await loadWith(value);
+
+    expect(tool.input.parse({ query: 'apple', pageSize: 201 }).pageSize).toBe(201);
+    expect(tool.input.parse({ query: 'apple', pageSize: 1000 }).pageSize).toBe(1000);
+  });
+
+  it.each(['false', 'true'])(
+    '%j rejects pageSize 0 and defaults an omitted one to 10',
+    async (value) => {
+      const tool = await loadWith(value);
+
+      expect(tool.input.safeParse({ query: 'apple', pageSize: 0 }).success).toBe(false);
+      expect(tool.input.parse({ query: 'apple' }).pageSize).toBe(10);
+    },
+  );
+
+  it('advertises the same schema in both modes: minimum 1, default 10, no maximum below the safe-integer bound', async () => {
+    const strict = JSON.stringify(z.toJSONSchema((await loadWith('false')).input));
+    const lenient = JSON.stringify(z.toJSONSchema((await loadWith('true')).input));
+
+    expect(strict).toBe(lenient);
+    const pageSize = (JSON.parse(lenient) as { properties: { pageSize: Record<string, unknown> } })
+      .properties.pageSize;
+    expect(pageSize).toMatchObject({ type: 'integer', minimum: 1, default: 10 });
+    expect(pageSize.maximum ?? Number.MAX_SAFE_INTEGER).toBe(Number.MAX_SAFE_INTEGER);
   });
 });

@@ -8,12 +8,6 @@ import type { BasisUnit } from './basis.js';
 /** FDC data source category strings. */
 export type FdcDataType = 'SR Legacy' | 'Foundation' | 'Survey (FNDDS)' | 'Branded';
 
-/** Unit options for portion scaling. */
-export type ScaleUnit = 'g' | 'oz' | 'lb' | 'kg' | 'serving';
-
-/** Unit options for comparison basis (no "serving" — must be gram-based). */
-export type CompareUnit = 'g' | 'oz' | 'lb' | 'kg';
-
 /** Nutrient category filter for usda_list_nutrients. */
 export type NutrientCategory =
   | 'macronutrients'
@@ -37,6 +31,21 @@ export interface NutrientReference {
 /** Nutrient entry in a search result or batch response. */
 export interface RawFoodNutrient {
   amount?: number;
+  /** Samples behind the value (detail and batch); SR Legacy sends 0 for calculated and assumed values. */
+  dataPoints?: number;
+  /** How FDC derived the value (detail and batch; search rows flatten it). */
+  foodNutrientDerivation?: {
+    code?: string;
+    description?: string;
+    /** The source category the derivation belongs to. */
+    foodNutrientSource?: { code?: string; description?: string };
+  };
+  /** Highest sample value, in the nutrient's unit per 100 of the basis. */
+  max?: number;
+  /** Median sample value, in the nutrient's unit per 100 of the basis. */
+  median?: number;
+  /** Lowest sample value, in the nutrient's unit per 100 of the basis. */
+  min?: number;
   /** Nested nutrient object (returned from full food detail). */
   nutrient?: {
     id?: number;
@@ -120,8 +129,29 @@ export interface RawFoodDetail {
 
 // ---- Normalized domain types ----
 
+/**
+ * What FDC records about how one nutrient value was obtained, each key present
+ * only when FDC sends it. Attached to a {@link FoodNutrient} only on request.
+ */
+export interface NutrientProvenance {
+  /** Samples behind the value, as sent (SR Legacy's 0 included); a count, never scaled. */
+  dataPoints?: number;
+  derivation?: {
+    code: string;
+    description: string;
+    /** FDC's source category for the derivation (`foodNutrientSource.description`). */
+    source?: string;
+  };
+  /** In the unit and basis of the nutrient's amount. */
+  max?: number;
+  /** In the unit and basis of the nutrient's amount. */
+  median?: number;
+  /** In the unit and basis of the nutrient's amount. */
+  min?: number;
+}
+
 /** A single nutrient in a normalized food result. */
-export interface FoodNutrient {
+export interface FoodNutrient extends NutrientProvenance {
   amount: number;
   id: number;
   name: string;

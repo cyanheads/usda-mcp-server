@@ -13,6 +13,7 @@ import {
   labelUnitBasis,
 } from '@/services/fdc/basis.js';
 import { getFdcService } from '@/services/fdc/fdc-service.js';
+import { NUTRIENT_PROVENANCE_OUTPUT, provenanceText } from '@/services/fdc/provenance.js';
 
 function toGrams(quantity: number, unit: 'g' | 'oz' | 'lb' | 'kg'): number {
   switch (unit) {
@@ -87,7 +88,7 @@ function scaledAmount(
 export const usdaGetFood = tool('usda_get_food', {
   title: 'Get USDA Food',
   description:
-    'Get the full nutrient profile for one food by FDC ID. Returns all available nutrients (or a filtered subset via the nutrients[] param) with optional per-portion scaling. Use usda_search_foods to discover FDC IDs. Values are per 100 g (basisUnit "g"), except Branded foods FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent, basis unverified). Provide unit, optionally with quantity, to scale all nutrient values from that basis to that amount (e.g. quantity=200, unit="g" → per-200g values); a mass unit is applied to an ml or label-unit basis without conversion, and a notice says so. quantity defaults to 100 for g, oz, lb, and kg and to 1 for serving. Serving uses the valid portion FDC displays first (lowest sequenceNumber), or a positive finite Branded label size in g/GRM/GM (case-insensitive) when no portion exists; quantity multiplies that weight. A label in any other unit sets the basis rather than a serving weight, so it requires an explicit mass-unit request. quantity without unit is rejected. Narrow nutrients[] to specific IDs to reduce response size for focused queries.',
+    'Get the full nutrient profile for one food by FDC ID. Returns all available nutrients (or a filtered subset via the nutrients[] param) with optional per-portion scaling. Use usda_search_foods to discover FDC IDs. Values are per 100 g (basisUnit "g"), except Branded foods FDC reports per 100 ml (basisUnit "ml") or per 100 of a label unit that fixes neither (basisUnit absent, basis unverified). Provide unit, optionally with quantity, to scale all nutrient values from that basis to that amount (e.g. quantity=200, unit="g" → per-200g values); a mass unit is applied to an ml or label-unit basis without conversion, and a notice says so. quantity defaults to 100 for g, oz, lb, and kg and to 1 for serving. Serving uses the valid portion FDC displays first (lowest sequenceNumber), or a positive finite Branded label size in g/GRM/GM (case-insensitive) when no portion exists; quantity multiplies that weight. A label in any other unit sets the basis rather than a serving weight, so it requires an explicit mass-unit request. quantity without unit is rejected. Narrow nutrients[] to specific IDs to reduce response size for focused queries. Set provenance=true to add to each nutrient how FDC obtained its value (derivation code, description, and source), its sample count (dataPoints), and the sample min, max, and median scaled with amount, each only where FDC sends it.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   input: z.object({
     fdcId: z
@@ -114,6 +115,12 @@ export const usdaGetFood = tool('usda_get_food', {
       .describe(
         'Unit for quantity. "serving" uses the weight of the valid portion FDC displays first (lowest sequenceNumber), or a Branded label size in g/GRM/GM (case-insensitive) when no portion exists, multiplied by quantity. Required when quantity is provided. Given alone, scales to 100 g, oz, lb, or kg, or to 1 serving.',
       ),
+    provenance: z
+      .boolean()
+      .default(false)
+      .describe(
+        'Add to each nutrient what FDC records about its value: derivation (code, description, source), dataPoints (sample count), and min, max, median (sample spread, scaled with amount). Each is present only where FDC sends it: Survey (FNDDS) foods send none, Branded foods only a derivation. Off by default; it makes the response two to three times as large.',
+      ),
   }),
   output: z.object({
     fdcId: z.number().describe('FDC ID of the food.'),
@@ -132,7 +139,12 @@ export const usdaGetFood = tool('usda_get_food', {
       .describe(
         'USDA food category (e.g. "Poultry Products"): the food category for SR Legacy and Foundation, the label category for Branded, the WWEIA category for Survey (FNDDS). Absent when FDC reports none.',
       ),
-    publicationDate: z.string().optional().describe('Date this food entry was published in FDC.'),
+    publicationDate: z
+      .string()
+      .optional()
+      .describe(
+        'Date this food entry was published in FDC, as YYYY-MM-DD (e.g. "2019-04-01"). A date FDC sends in another form is returned as sent.',
+      ),
     brandOwner: z.string().optional().describe('Brand owner. Branded items only.'),
     brandName: z.string().optional().describe('Brand name. Branded items only.'),
     gtinUpc: z
@@ -229,6 +241,7 @@ export const usdaGetFood = tool('usda_get_food', {
               .number()
               .optional()
               .describe('Percent daily value from product label. Branded items only.'),
+            ...NUTRIENT_PROVENANCE_OUTPUT.shape,
           })
           .describe('A single nutrient entry with ID, name, amount, and unit.'),
       )
@@ -303,7 +316,9 @@ export const usdaGetFood = tool('usda_get_food', {
     }
 
     const food = await getFdcService()
-      .getFoodDetail(input.fdcId, input.nutrients?.length ? input.nutrients : undefined, ctx)
+      .getFoodDetail(input.fdcId, input.nutrients?.length ? input.nutrients : undefined, ctx, {
+        provenance: input.provenance,
+      })
       .catch((err: unknown) => {
         // FDC's HTTP 404 (the status the service's McpError carries) → not_found contract entry
         if (err instanceof McpError && err.data?.status === 404) {
@@ -365,6 +380,9 @@ export const usdaGetFood = tool('usda_get_food', {
       if (notice) ctx.enrich.notice(notice);
     }
 
+    // The sample spread is in amount's unit and basis, so it scales and rounds with it; dataPoints is a count.
+    const scale = (value: number) => Number((value * scaleFactor).toFixed(4));
+
     return {
       fdcId: food.fdcId,
       description: food.description,
@@ -390,7 +408,10 @@ export const usdaGetFood = tool('usda_get_food', {
       }),
       nutrients: food.nutrients.map((n) => ({
         ...n,
-        amount: Number((n.amount * scaleFactor).toFixed(4)),
+        amount: scale(n.amount),
+        ...(n.min !== undefined && { min: scale(n.min) }),
+        ...(n.max !== undefined && { max: scale(n.max) }),
+        ...(n.median !== undefined && { median: scale(n.median) }),
       })),
       ...(food.missingNutrients && { missingNutrients: food.missingNutrients }),
     };
@@ -401,7 +422,7 @@ export const usdaGetFood = tool('usda_get_food', {
 
     // FDC-supplied free text goes through escapeMarkdownInline so content[] reads back as written.
     lines.push(`## ${escapeMarkdownInline(result.description)}`);
-    lines.push(`**FDC ID:** ${result.fdcId} | **Type:** ${result.dataType}`);
+    lines.push(`**FDC ID:** ${result.fdcId} | **Type:** ${escapeMarkdownInline(result.dataType)}`);
     if (result.foodCategory) {
       lines.push(`**Category:** ${escapeMarkdownInline(result.foodCategory)}`);
     }
@@ -410,7 +431,9 @@ export const usdaGetFood = tool('usda_get_food', {
     }
     if (result.brandName) lines.push(`**Brand:** ${escapeMarkdownInline(result.brandName)}`);
     if (result.gtinUpc) lines.push(`**GTIN/UPC:** ${escapeMarkdownInline(result.gtinUpc)}`);
-    if (result.publicationDate) lines.push(`**Published:** ${result.publicationDate}`);
+    if (result.publicationDate) {
+      lines.push(`**Published:** ${escapeMarkdownInline(result.publicationDate)}`);
+    }
     if (result.ingredients) {
       lines.push(`**Ingredients:** ${escapeMarkdownInline(result.ingredients)}`);
     }
@@ -463,7 +486,7 @@ export const usdaGetFood = tool('usda_get_food', {
       for (const n of result.nutrients) {
         const pdv = n.percentDailyValue != null ? ` (${n.percentDailyValue}% DV)` : '';
         lines.push(
-          `- **${escapeMarkdownInline(n.name)}** (ID: ${n.id}, SR#: ${n.number}): ${n.amount} ${n.unit}${pdv}`,
+          `- **${escapeMarkdownInline(n.name)}** (ID: ${n.id}${n.number ? `, SR#: ${escapeMarkdownInline(n.number)}` : ''}): ${n.amount} ${escapeMarkdownInline(n.unit)}${pdv}${provenanceText(n)}`,
         );
       }
     } else if (!result.missingNutrients) {

@@ -15,7 +15,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaGetFoods } from '@/mcp-server/tools/definitions/usda-get-foods.tool.js';
 import { createFdcFake, RAW_COOKIE, RAW_KALE, RAW_MILK } from '../fdc-fake.js';
-import { allText, firstText } from '../helpers.js';
+import { allText, firstText, ids, stall } from '../helpers.js';
 
 const { format } = usdaGetFoods;
 if (!format) throw new Error('usda_get_foods must declare format()');
@@ -68,9 +68,6 @@ const MOCK_FOODS = [
     portions: [],
   },
 ];
-
-/** `count` distinct positive FDC ids, starting at `from` — the values are irrelevant, the length is not. */
-const ids = (count: number, from = 1) => Array.from({ length: count }, (_v, i) => i + from);
 
 /** A food the mocked service returns for each id it was asked for, so a call's fetched set is visible. */
 const foodFor = (fdcId: number) => ({
@@ -192,7 +189,9 @@ describe('usdaGetFoods', () => {
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079], nutrients: [1003, 1008] });
     await usdaGetFoods.handler(input, ctx);
 
-    expect(service.getFoodsBatch).toHaveBeenCalledWith([171077, 171079], [1003, 1008], ctx);
+    expect(service.getFoodsBatch).toHaveBeenCalledWith([171077, 171079], [1003, 1008], ctx, {
+      provenance: false,
+    });
   });
 
   it('passes undefined nutrient filter when nutrients are omitted', async () => {
@@ -201,7 +200,173 @@ describe('usdaGetFoods', () => {
     const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079] });
     await usdaGetFoods.handler(input, ctx);
 
-    expect(service.getFoodsBatch).toHaveBeenCalledWith([171077, 171079], undefined, ctx);
+    expect(service.getFoodsBatch).toHaveBeenCalledWith([171077, 171079], undefined, ctx, {
+      provenance: false,
+    });
+  });
+
+  it('asks the service for provenance when provenance is true', async () => {
+    const service = await getServiceMock();
+    service.getFoodsBatch.mockClear();
+    const ctx = createMockContext({ errors: usdaGetFoods.errors });
+    const input = usdaGetFoods.input.parse({ fdcIds: [171077, 171079], provenance: true });
+    await usdaGetFoods.handler(input, ctx);
+
+    expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith(
+      [171077, 171079],
+      undefined,
+      ctx,
+      { provenance: true },
+    );
+  });
+
+  it('defaults provenance to false, advertises that default, and rejects a non-boolean', () => {
+    expect(usdaGetFoods.input.parse({ fdcIds: [1, 2] }).provenance).toBe(false);
+    expect(z.toJSONSchema(usdaGetFoods.input).properties?.provenance).toMatchObject({
+      type: 'boolean',
+      default: false,
+    });
+    expect(() => usdaGetFoods.input.parse({ fdcIds: [1, 2], provenance: 1 })).toThrow();
+  });
+
+  it('copies each provenance key the service attaches into its explicit nutrient map', async () => {
+    const service = await getServiceMock();
+    const derivation = { code: 'A', description: 'Analytical' };
+    service.getFoodsBatch.mockResolvedValue({
+      foods: [
+        {
+          ...MOCK_FOODS[0],
+          nutrients: [
+            {
+              id: 1087,
+              name: 'Calcium, Ca',
+              number: '301',
+              amount: 254,
+              unit: 'MG',
+              percentDailyValue: 20,
+              derivation,
+              dataPoints: 0,
+              min: 0,
+              max: 281,
+              median: 264,
+            },
+            { id: 1003, name: 'Protein', number: '203', amount: 22.5, unit: 'G', dataPoints: 16 },
+            // Foundation sends an all-zero spread often; each zero is a value FDC sent, kept as sent.
+            {
+              id: 1010,
+              name: 'Sucrose',
+              number: '210',
+              amount: 0,
+              unit: 'G',
+              derivation,
+              dataPoints: 2,
+              min: 0,
+              max: 0,
+              median: 0,
+            },
+          ],
+        },
+      ],
+      failed: [],
+      deferredIds: [],
+    });
+    const result = await runToolContract(usdaGetFoods, {
+      fdcIds: [171077, 171079],
+      provenance: true,
+    });
+
+    expect(
+      (result.structuredContent as { foods: Array<{ nutrients: object[] }> }).foods[0]?.nutrients,
+    ).toStrictEqual([
+      {
+        id: 1087,
+        name: 'Calcium, Ca',
+        number: '301',
+        amount: 254,
+        unit: 'MG',
+        derivation,
+        dataPoints: 0,
+        min: 0,
+        max: 281,
+        median: 264,
+      },
+      { id: 1003, name: 'Protein', number: '203', amount: 22.5, unit: 'G', dataPoints: 16 },
+      {
+        id: 1010,
+        name: 'Sucrose',
+        number: '210',
+        amount: 0,
+        unit: 'G',
+        derivation,
+        dataPoints: 2,
+        min: 0,
+        max: 0,
+        median: 0,
+      },
+    ]);
+    const text = firstText(result.content);
+    expect(text).toContain(
+      '- Calcium, Ca (ID: 1087, SR#: 301): 254 MG — A: Analytical; n=0; range 0–281; median 264',
+    );
+    expect(text).toContain('- Protein (ID: 1003, SR#: 203): 22.5 G — n=16');
+    expect(text.split('\n')).toContain(
+      '- Sucrose (ID: 1010, SR#: 210): 0 G — A: Analytical; n=2; range 0–0; median 0',
+    );
+  });
+
+  it('escapes the data type, SR number, and unit in content[] while structuredContent keeps them as sent', async () => {
+    const service = await getServiceMock();
+    service.getFoodsBatch.mockResolvedValue({
+      foods: [
+        {
+          ...MOCK_FOODS[0],
+          dataType: 'SR|Legacy*',
+          nutrients: [{ id: 1003, name: 'Protein', number: '20*3', amount: 22.5, unit: 'mg|x*' }],
+        },
+      ],
+      failed: [],
+      deferredIds: [],
+    });
+    const result = await runToolContract(usdaGetFoods, { fdcIds: [171077, 171079] });
+
+    expect(result.structuredContent).toMatchObject({
+      foods: [{ dataType: 'SR|Legacy*', nutrients: [{ id: 1003, number: '20*3', unit: 'mg|x*' }] }],
+    });
+    const text = firstText(result.content);
+    expect(text).toContain(' | **Type:** SR\\|Legacy\\*');
+    expect(text.split('\n')).toContain('- Protein (ID: 1003, SR#: 20\\*3): 22.5 mg\\|x\\*');
+  });
+
+  it('leaves the SR# segment out of content[] for a nutrient FDC gives no legacy number', async () => {
+    const service = await getServiceMock();
+    service.getFoodsBatch.mockResolvedValue({
+      foods: [
+        {
+          ...MOCK_FOODS[0],
+          nutrients: [
+            { id: 2058, name: 'Beta-glucan', number: '', amount: 0.9167, unit: 'G' },
+            { id: 1003, name: 'Protein', number: '203', amount: 22.5, unit: 'G' },
+          ],
+        },
+      ],
+      failed: [],
+      deferredIds: [],
+    });
+    const result = await runToolContract(usdaGetFoods, { fdcIds: [171077, 171079] });
+
+    expect(result.structuredContent).toMatchObject({
+      foods: [
+        {
+          nutrients: [
+            { id: 2058, number: '' },
+            { id: 1003, number: '203' },
+          ],
+        },
+      ],
+    });
+    const lines = firstText(result.content).split('\n');
+    expect(lines).toContain('- Beta-glucan (ID: 2058): 0.9167 G');
+    expect(lines).toContain('- Protein (ID: 1003, SR#: 203): 22.5 G');
   });
 
   it('normalizes output to the expected shape', async () => {
@@ -335,7 +500,9 @@ describe('usdaGetFoods batch size and deferredIds', () => {
         ctx,
       );
 
-      expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith(ids(count), undefined, ctx);
+      expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith(ids(count), undefined, ctx, {
+        provenance: false,
+      });
       expect(result.foods.map((f) => f.fdcId)).toEqual(ids(count));
       expect(Object.hasOwn(result, 'deferredIds')).toBe(false);
       expect((ctx.log as MockContextLogger).calls.filter((c) => c.level === 'notice')).toEqual([]);
@@ -352,7 +519,9 @@ describe('usdaGetFoods batch size and deferredIds', () => {
     const ctx = createMockContext({ errors: usdaGetFoods.errors });
     const result = await usdaGetFoods.handler(usdaGetFoods.input.parse({ fdcIds: ids(21) }), ctx);
 
-    expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith(ids(20), undefined, ctx);
+    expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith(ids(20), undefined, ctx, {
+      provenance: false,
+    });
     expect(result.foods.map((f) => f.fdcId)).toEqual(ids(20));
     expect(result.failed).toEqual([]);
     expect(result.deferredIds).toEqual([21]);
@@ -392,7 +561,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
   it('discloses the deferral on both surfaces', async () => {
     const result = await runToolContract(usdaGetFoods, { fdcIds: ids(25) });
     const notice =
-      'Fetched the first 20 of 25 distinct FDC IDs; call usda_get_foods again with the 5 IDs in deferredIds.';
+      'Fetched the first 20 of 25 distinct FDC IDs; call usda_get_foods again with the 5 IDs in deferredIds and the same nutrients and provenance.';
 
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toMatchObject({ deferredIds: [21, 22, 23, 24, 25], notice });
@@ -408,7 +577,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
     expect(result.structuredContent).toMatchObject({
       deferredIds: [21],
       notice:
-        'Fetched the first 20 of 21 distinct FDC IDs; fetch the 1 ID in deferredIds with usda_get_food (fdcId 21).',
+        'Fetched the first 20 of 21 distinct FDC IDs; fetch the 1 ID in deferredIds with usda_get_food (fdcId 21) and the same nutrients and provenance.',
     });
   });
 
@@ -423,6 +592,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
       [3, 1, 2, ...ids(17, 4)],
       undefined,
       ctx,
+      { provenance: false },
     );
     expect(result.foods).toHaveLength(20);
     expect(Object.hasOwn(result, 'deferredIds')).toBe(false);
@@ -437,7 +607,9 @@ describe('usdaGetFoods batch size and deferredIds', () => {
       ctx,
     );
 
-    expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith([171077], undefined, ctx);
+    expect(service.getFoodsBatch).toHaveBeenCalledExactlyOnceWith([171077], undefined, ctx, {
+      provenance: false,
+    });
     expect(result.foods.map((f) => f.fdcId)).toEqual([171077]);
   });
 
@@ -460,7 +632,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
       await deferring([2, 4]);
       const result = await runToolContract(usdaGetFoods, { fdcIds: ids(5) });
       const notice =
-        "2 of the 5 fetched FDC IDs (2, 4) went unanswered: FDC did not return them before this call's deadline or kept failing; call usda_get_foods again with the 2 IDs in deferredIds, or fetch them one at a time with usda_get_food.";
+        "2 of the 5 fetched FDC IDs (2, 4) went unanswered: FDC did not return them before this call's deadline or kept failing; call usda_get_foods again with the 2 IDs in deferredIds and the same nutrients and provenance, or fetch them one at a time with usda_get_food.";
 
       expect(result.structuredContent).toMatchObject({
         foods: [{ fdcId: 1 }, { fdcId: 3 }, { fdcId: 5 }],
@@ -482,7 +654,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
       expect(result.structuredContent).toMatchObject({
         deferredIds: [2],
         notice:
-          "1 of the 3 fetched FDC IDs (2) went unanswered: FDC did not return it before this call's deadline or kept failing; fetch the 1 ID in deferredIds with usda_get_food (fdcId 2).",
+          "1 of the 3 fetched FDC IDs (2) went unanswered: FDC did not return it before this call's deadline or kept failing; fetch the 1 ID in deferredIds with usda_get_food (fdcId 2) and the same nutrients and provenance.",
       });
     });
 
@@ -502,7 +674,7 @@ describe('usdaGetFoods batch size and deferredIds', () => {
       const contract = await runToolContract(usdaGetFoods, { fdcIds: ids(22) });
       expect(contract.structuredContent).toMatchObject({
         notice:
-          "Fetched the first 20 of 22 distinct FDC IDs, and 1 of those (5) went unanswered: FDC did not return it before this call's deadline or kept failing; call usda_get_foods again with the 3 IDs in deferredIds, or fetch the unanswered ones one at a time with usda_get_food.",
+          "Fetched the first 20 of 22 distinct FDC IDs, and 1 of those (5) went unanswered: FDC did not return it before this call's deadline or kept failing; call usda_get_foods again with the 3 IDs in deferredIds and the same nutrients and provenance, or fetch the unanswered ones one at a time with usda_get_food.",
       });
     });
 
@@ -689,9 +861,35 @@ describe('usdaGetFoods over the real FdcService', () => {
     ]);
     const text = allText(result.content);
     expect(text).toContain(
-      '### MILK\n**FDC ID:** 2078244 | **Type:** Branded | **Label unit:** ml\n**Nutrients (per 100 ml):**\n- Energy (ID: 1008, SR#: 208): 62 kcal',
+      '### MILK\n**FDC ID:** 2078244 | **Type:** Branded | **Label unit:** ml\n**Nutrients (per 100 ml):**\n- Energy (ID: 1008, SR#: 208): 62 KCAL',
     );
     expect(text).toContain('**Nutrients (per 100 IU label units (basis unverified)):**');
+  });
+
+  it('spells each entry’s units as search does, on both surfaces', async () => {
+    const result = await runToolContract(usdaGetFoods, {
+      fdcIds: [168421, RAW_MILK.fdcId],
+      nutrients: [1008, 1003, 1087],
+    });
+    type Foods = { foods: Array<{ nutrients: Array<{ id: number; unit: string }> }> };
+
+    expect(
+      (result.structuredContent as Foods).foods.map((f) => f.nutrients.map((n) => [n.id, n.unit])),
+    ).toEqual([
+      [
+        [1008, 'KCAL'],
+        [1003, 'G'],
+        [1087, 'MG'],
+      ],
+      [
+        [1087, 'MG'],
+        [1008, 'KCAL'],
+      ],
+    ]);
+    const text = allText(result.content);
+    expect(text).toContain('- Energy (ID: 1008, SR#: 208): 35 KCAL');
+    expect(text).toContain('- Protein (ID: 1003, SR#: 203): 2.92 G');
+    expect(text).toContain('- Calcium, Ca (ID: 1087, SR#: 301): 125 MG');
   });
 
   it('lists a requested ID a food does not report under that food', async () => {
@@ -734,19 +932,214 @@ describe('usdaGetFoods over the real FdcService', () => {
     expect(await http.calls[0]?.request.clone().json()).toEqual({ fdcIds: [168421] });
   });
 
+  /** With provenance=true each entry's nutrients carry what FDC sends, unscaled; without it nothing changes. */
+  describe('nutrient provenance', () => {
+    type Foods = { foods: Array<{ fdcId: number; nutrients: Array<Record<string, unknown>> }> };
+    const ANALYTICAL = {
+      code: 'A',
+      description: 'Analytical',
+      source: 'Analytical or derived from analytical',
+    };
+    const CALCULATED = { code: 'NC', description: 'Calculated', source: 'Calculated or imputed' };
+
+    it('carries an SR Legacy pair’s counts and min–max ranges on both surfaces', async () => {
+      const result = await runToolContract(usdaGetFoods, {
+        fdcIds: [171477, 173879],
+        nutrients: [1008, 1003],
+        provenance: true,
+      });
+
+      expect((result.structuredContent as Foods).foods.map((f) => f.nutrients)).toStrictEqual([
+        [
+          {
+            id: 1008,
+            name: 'Energy',
+            number: '208',
+            amount: 165,
+            unit: 'KCAL',
+            derivation: CALCULATED,
+            dataPoints: 0,
+          },
+          { id: 1003, name: 'Protein', number: '203', amount: 31.02, unit: 'G', dataPoints: 16 },
+        ],
+        [
+          {
+            id: 1008,
+            name: 'Energy',
+            number: '208',
+            amount: 325,
+            unit: 'KCAL',
+            derivation: CALCULATED,
+            dataPoints: 0,
+          },
+          {
+            id: 1003,
+            name: 'Protein',
+            number: '203',
+            amount: 10.84,
+            unit: 'G',
+            derivation: ANALYTICAL,
+            dataPoints: 15,
+            min: 10.01,
+            max: 13.24,
+          },
+        ],
+      ]);
+      const lines = allText(result.content).split('\n');
+      expect(lines).toEqual(
+        expect.arrayContaining([
+          '- Energy (ID: 1008, SR#: 208): 165 KCAL — NC: Calculated; source: Calculated or imputed; n=0',
+          '- Protein (ID: 1003, SR#: 203): 31.02 G — n=16',
+          '- Energy (ID: 1008, SR#: 208): 325 KCAL — NC: Calculated; source: Calculated or imputed; n=0',
+          '- Protein (ID: 1003, SR#: 203): 10.84 G — A: Analytical; source: Analytical or derived from analytical; n=15; range 10.01–13.24',
+        ]),
+      );
+    });
+
+    it('carries Foundation and Branded entries as FDC sends them, the spread unscaled', async () => {
+      const result = await runToolContract(usdaGetFoods, {
+        fdcIds: [323505, 759418],
+        nutrients: [1087],
+        provenance: true,
+      });
+
+      expect((result.structuredContent as Foods).foods.map((f) => f.nutrients)).toStrictEqual([
+        [
+          {
+            id: 1087,
+            name: 'Calcium, Ca',
+            number: '301',
+            amount: 254,
+            unit: 'MG',
+            derivation: ANALYTICAL,
+            dataPoints: 5,
+            min: 203,
+            max: 281,
+            median: 264,
+          },
+        ],
+        [
+          {
+            id: 1087,
+            name: 'Calcium, Ca',
+            number: '301',
+            amount: 385,
+            unit: 'MG',
+            derivation: {
+              code: 'LCCD',
+              description: 'Calculated from a daily value percentage per serving size measure',
+              source: "Manufacturer's analytical; partial documentation",
+            },
+          },
+        ],
+      ]);
+      const text = allText(result.content);
+      expect(text).toContain(
+        '- Calcium, Ca (ID: 1087, SR#: 301): 254 MG — A: Analytical; source: Analytical or derived from analytical; n=5; range 203–281; median 264',
+      );
+      expect(text).toContain(
+        "- Calcium, Ca (ID: 1087, SR#: 301): 385 MG — LCCD: Calculated from a daily value percentage per serving size measure; source: Manufacturer's analytical; partial documentation",
+      );
+    });
+
+    it('keeps missingNutrients unchanged beside the filtered rows', async () => {
+      const result = await runToolContract(usdaGetFoods, {
+        fdcIds: [171477, 2708522],
+        nutrients: [1005, 99999],
+        provenance: true,
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        foods: [
+          {
+            fdcId: 171477,
+            nutrients: [{ id: 1005, derivation: { code: 'Z' }, dataPoints: 0 }],
+            missingNutrients: [99999],
+          },
+          { fdcId: 2708522, nutrients: [], missingNutrients: [1005, 99999] },
+        ],
+      });
+    });
+
+    /** Characterization: both records carry FDC's provenance fields, and neither surface shows them by default. */
+    it('keeps an SR Legacy pair byte-identical with provenance omitted or false', async () => {
+      const structured = {
+        foods: [
+          {
+            fdcId: 171477,
+            description: 'Chicken, broilers or fryers, breast, meat only, cooked, roasted',
+            dataType: 'SR Legacy',
+            basisUnit: 'g',
+            nutrients: [
+              { id: 1008, name: 'Energy', number: '208', amount: 165, unit: 'KCAL' },
+              { id: 1003, name: 'Protein', number: '203', amount: 31.02, unit: 'G' },
+              {
+                id: 1005,
+                name: 'Carbohydrate, by difference',
+                number: '205',
+                amount: 0,
+                unit: 'G',
+              },
+              { id: 1079, name: 'Fiber, total dietary', number: '291', amount: 0, unit: 'G' },
+              { id: 1103, name: 'Selenium, Se', number: '317', amount: 27.6, unit: 'UG' },
+            ],
+          },
+          {
+            fdcId: 173879,
+            description: 'Kielbasa, fully cooked, unheated',
+            dataType: 'SR Legacy',
+            basisUnit: 'g',
+            nutrients: [
+              { id: 1008, name: 'Energy', number: '208', amount: 325, unit: 'KCAL' },
+              { id: 1003, name: 'Protein', number: '203', amount: 10.84, unit: 'G' },
+              { id: 1004, name: 'Total lipid (fat)', number: '204', amount: 29.63, unit: 'G' },
+              {
+                id: 1005,
+                name: 'Carbohydrate, by difference',
+                number: '205',
+                amount: 3.72,
+                unit: 'G',
+              },
+            ],
+          },
+        ],
+        failed: [],
+      };
+      const text = [
+        '**2 foods fetched** | **0 failed**\n',
+        '### Chicken, broilers or fryers, breast, meat only, cooked, roasted',
+        '**FDC ID:** 171477 | **Type:** SR Legacy',
+        '**Nutrients (per 100g):**',
+        '- Energy (ID: 1008, SR#: 208): 165 KCAL',
+        '- Protein (ID: 1003, SR#: 203): 31.02 G',
+        '- Carbohydrate, by difference (ID: 1005, SR#: 205): 0 G',
+        '- Fiber, total dietary (ID: 1079, SR#: 291): 0 G',
+        '- Selenium, Se (ID: 1103, SR#: 317): 27.6 UG',
+        '',
+        '### Kielbasa, fully cooked, unheated',
+        '**FDC ID:** 173879 | **Type:** SR Legacy',
+        '**Nutrients (per 100g):**',
+        '- Energy (ID: 1008, SR#: 208): 325 KCAL',
+        '- Protein (ID: 1003, SR#: 203): 10.84 G',
+        '- Total lipid (fat) (ID: 1004, SR#: 204): 29.63 G',
+        '- Carbohydrate, by difference (ID: 1005, SR#: 205): 3.72 G',
+        '',
+      ].join('\n');
+
+      for (const flag of [{}, { provenance: false }]) {
+        const result = await runToolContract(usdaGetFoods, { fdcIds: [171477, 173879], ...flag });
+
+        expect(result.structuredContent).toStrictEqual(structured);
+        expect(result.content).toStrictEqual([{ type: 'text', text }]);
+      }
+    });
+  });
+
   /** A batch attempt that runs out of time splits into one request per ID under the call's 45 s budget. */
   describe('when the batch attempt runs out of time', () => {
     let upstream: FetchMockHarness;
     /** The `fdcIds` of every `/foods` request, in the order they reached the upstream. */
     let sent: number[][];
-
-    /** Settles only when the request aborts. */
-    const stall = (request: Request) =>
-      new Promise<Response>((_resolve, reject) => {
-        request.signal.addEventListener('abort', () => reject(request.signal.reason), {
-          once: true,
-        });
-      });
 
     /** Multi-ID batches stall; a single ID answers after 1 s, unless it is in `stalled`. */
     function serve(stalled: number[]) {
@@ -797,7 +1190,7 @@ describe('usdaGetFoods over the real FdcService', () => {
         failed: [],
         deferredIds: [7, 21],
         notice:
-          "Fetched the first 20 of 21 distinct FDC IDs, and 1 of those (7) went unanswered: FDC did not return it before this call's deadline or kept failing; call usda_get_foods again with the 2 IDs in deferredIds, or fetch the unanswered ones one at a time with usda_get_food.",
+          "Fetched the first 20 of 21 distinct FDC IDs, and 1 of those (7) went unanswered: FDC did not return it before this call's deadline or kept failing; call usda_get_foods again with the 2 IDs in deferredIds and the same nutrients and provenance, or fetch the unanswered ones one at a time with usda_get_food.",
       });
       expect(allText(result.content)).toContain('**Deferred (not fetched):** 7, 21');
       // One batch, then one request per fetched ID; the 21st never reached FDC.

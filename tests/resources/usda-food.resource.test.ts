@@ -5,6 +5,7 @@
 
 import { JsonRpcErrorCode, McpError, timeout } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, type FetchMockHarness } from '@cyanheads/mcp-ts-core/testing';
+import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { createWorkerHandler } from '@cyanheads/mcp-ts-core/worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { usdaFoodResource } from '@/mcp-server/resources/definitions/usda-food.resource.js';
@@ -266,6 +267,77 @@ describe('usdaFoodResource', () => {
     });
   });
 
+  /**
+   * A malformed or unknown FDC ID is caller input, so its failure record
+   * (`Error in resource:USDA Food Profile`) logs at notice and stays out of the
+   * error stream, while an FDC outage still logs at error. Only the handler
+   * factory writes that record, so each read goes through `resources/read`.
+   */
+  describe('failure record level', () => {
+    const isFailureRecord = (call: unknown[]) =>
+      String(call[0]).startsWith('Error in resource:USDA Food Profile');
+
+    function spyOnFailureRecords() {
+      return {
+        notice: vi.spyOn(logger, 'notice').mockImplementation(() => {}),
+        error: vi.spyOn(logger, 'error').mockImplementation(() => {}),
+      };
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    });
+
+    it.each([
+      [
+        'invalid_id',
+        'usda://food/abc',
+        undefined,
+        -32007,
+        'Provide a numeric FDC ID from usda_search_foods results.',
+      ],
+      [
+        'not_found',
+        'usda://food/999999999',
+        fdcHttpError(404, 'Fetch failed for https://api.example/food/999999999. Status: 404'),
+        -32001,
+        'Verify the FDC ID using usda_search_foods and use a valid numeric ID.',
+      ],
+    ])(
+      'logs %s at notice, never error, and answers the same JSON-RPC error',
+      async (reason, uri, upstream, code, hint) => {
+        const service = await getServiceMock();
+        if (upstream) service.getFoodDetail.mockRejectedValue(upstream);
+        const log = spyOnFailureRecords();
+
+        expect(await readResourceError(uri)).toMatchObject({
+          code,
+          data: { reason, recovery: { hint } },
+        });
+        expect(log.notice.mock.calls.filter(isFailureRecord)).toHaveLength(1);
+        expect(log.error.mock.calls.filter(isFailureRecord)).toHaveLength(0);
+      },
+    );
+
+    it('keeps retry_deadline_exceeded at error', async () => {
+      const service = await getServiceMock();
+      service.getFoodDetail.mockRejectedValue(
+        timeout('FDC request exceeded its 45000ms retry deadline after 3 attempts.', {
+          reason: 'retry_deadline_exceeded',
+        }),
+      );
+      const log = spyOnFailureRecords();
+
+      expect(await readResourceError('usda://food/171077')).toMatchObject({
+        code: -32004,
+        data: { reason: 'retry_deadline_exceeded' },
+      });
+      expect(log.error.mock.calls.filter(isFailureRecord)).toHaveLength(1);
+      expect(log.notice.mock.calls.filter(isFailureRecord)).toHaveLength(0);
+    });
+  });
+
   describe('over the real FdcService', () => {
     beforeEach(async () => {
       vi.stubEnv('USDA_FDC_API_KEY', 'test-key');
@@ -353,6 +425,50 @@ describe('usdaFoodResource', () => {
         ],
       });
       expect((food.portions as object[]).every((p) => !('amount' in p))).toBe(true);
+    });
+
+    it('reads the date as YYYY-MM-DD and each unit as search spells it', async () => {
+      const food = await readResourceJson('usda://food/168421');
+
+      expect(food.publicationDate).toBe('2019-04-01');
+      expect(
+        (food.nutrients as Array<{ id: number; unit: string }>).map((n) => [n.id, n.unit]),
+      ).toEqual([
+        [1008, 'KCAL'],
+        [1003, 'G'],
+        [1004, 'G'],
+        [1005, 'G'],
+        [1079, 'G'],
+        [1258, 'G'],
+        [1093, 'MG'],
+        [1092, 'MG'],
+        [1087, 'MG'],
+        [1089, 'MG'],
+        [2000, 'G'],
+        [1162, 'MG'],
+      ]);
+    });
+
+    /** The resource returns the service's record as-is, so it never carries the opt-in provenance fields. */
+    it('reads a record FDC sends provenance on without any of it', async () => {
+      const kale = await readResourceJson('usda://food/323505');
+      const chicken = await readResourceJson('usda://food/171477');
+
+      expect(kale.nutrients).toStrictEqual([
+        { id: 1008, name: 'Energy', number: '208', amount: 35, unit: 'KCAL' },
+        { id: 1003, name: 'Protein', number: '203', amount: 2.92, unit: 'G' },
+        { id: 1079, name: 'Fiber, total dietary', number: '291', amount: 4.1, unit: 'G' },
+        { id: 1063, name: 'Sugars, Total', number: '269.3', amount: 0.8, unit: 'G' },
+        { id: 1010, name: 'Sucrose', number: '210', amount: 0, unit: 'G' },
+        { id: 1087, name: 'Calcium, Ca', number: '301', amount: 254, unit: 'MG' },
+      ]);
+      expect(chicken.nutrients).toStrictEqual([
+        { id: 1008, name: 'Energy', number: '208', amount: 165, unit: 'KCAL' },
+        { id: 1003, name: 'Protein', number: '203', amount: 31.02, unit: 'G' },
+        { id: 1005, name: 'Carbohydrate, by difference', number: '205', amount: 0, unit: 'G' },
+        { id: 1079, name: 'Fiber, total dietary', number: '291', amount: 0, unit: 'G' },
+        { id: 1103, name: 'Selenium, Se', number: '317', amount: 27.6, unit: 'UG' },
+      ]);
     });
   });
 
