@@ -1,0 +1,395 @@
+{
+  "dictionary": {
+    "date": "2026-10-29",
+    "from": "FoodData_Central_foundation_food_csv_2026-10-29.zip"
+  },
+  "sources": {
+    "Foundation": {
+      "date": "2026-10-29",
+      "from": "FoodData_Central_foundation_food_json_2026-10-29.zip",
+      "foods": 424
+    },
+    "SR Legacy": {
+      "date": "2018-04",
+      "from": "FoodData_Central_sr_legacy_food_csv_2018-04.zip",
+      "foods": 7793
+    },
+    "Survey (FNDDS)": {
+      "date": "2024-10-31",
+      "from": "FoodData_Central_survey_food_csv_2024-10-31.zip",
+      "foods": 5432
+    },
+    "Branded": {
+      "date": "2026-11-19",
+      "from": "45 FDC API /v1/foods/search pages of Branded foods, pageSize 200",
+      "foods": 8310
+    }
+  },
+  "nutrients": [
+    { "id": 1002, "foods": { "Foundation": 379 } },
+    {
+      "id": 1003,
+      "foods": { "Foundation": 407, "SR Legacy": 7793, "Survey (FNDDS)": 5431, "Branded": 8220 }
+    },
+    {
+      "id": 1004,
+      "foods": { "Foundation": 393, "SR Legacy": 7793, "Survey (FNDDS)": 5431, "Branded": 8225 }
+    },
+    {
+      "id": 1005,
+      "foods": { "Foundation": 374, "SR Legacy": 7793, "Survey (FNDDS)": 5431, "Branded": 8206 }
+    },
+    { "id": 1007, "foods": { "Foundation": 397, "SR Legacy": 7790, "Branded": 2 } },
+    {
+      "id": 1008,
+      "foods": { "Foundation": 95, "SR Legacy": 7793, "Survey (FNDDS)": 5431, "Branded": 8164 }
+    },
+    { "id": 1009, "foods": { "Foundation": 131, "SR Legacy": 1167, "Branded": 1 } },
+    { "id": 1010, "foods": { "Foundation": 197, "SR Legacy": 1733 } },
+    { "id": 1011, "foods": { "Foundation": 197, "SR Legacy": 1740, "Branded": 2 } },
+    { "id": 1012, "foods": { "Foundation": 197, "SR Legacy": 1745, "Branded": 1 } },
+    { "id": 1013, "foods": { "Foundation": 197, "SR Legacy": 1712, "Branded": 2 } },
+    { "id": 1014, "foods": { "Foundation": 197, "SR Legacy": 1711 } },
+    { "id": 1018, "foods": { "SR Legacy": 5399, "Survey (FNDDS)": 5431 } },
+    { "id": 1024, "foods": { "Foundation": 1 } },
+    { "id": 1025, "retained": true },
+    { "id": 1026, "retained": true },
+    { "id": 1032, "foods": { "Foundation": 15 } },
+    { "id": 1038, "retained": true },
+    { "id": 1039, "foods": { "Foundation": 15 } },
+    { "id": 1041, "foods": { "Foundation": 13 } },
+    { "id": 1042, "retained": true },
+    { "id": 1043, "foods": { "Foundation": 5 } },
+    { "id": 1044, "foods": { "Foundation": 13 } },
+    { "id": 1046, "retained": true },
+    { "id": 1050, "foods": { "Foundation": 30 } },
+    {
+      "id": 1051,
+      "foods": { "Foundation": 416, "SR Legacy": 7793, "Survey (FNDDS)": 5431, "Branded": 34 }
+    },
+    { "id": 1053, "retained": true },
+    { "id": 1056, "foods": { "Branded": 3 } },
+    { "id": 1057, "foods": { "SR Legacy": 5215, "Survey (FNDDS)": 5431, "Branded": 5 } },
+    { "id": 1058, "foods": { "SR Legacy": 5170, "Survey (FNDDS)": 5431 } },
+    { "id": 1062, "foods": { "Foundation": 95, "SR Legacy": 7793 } },
+    { "id": 1063, "foods": { "Foundation": 161, "Branded": 1 } },
+    { "id": 1071, "foods": { "Foundation": 17 } },
+    { "id": 1072, "foods": { "Branded": 50 } },
+    { "id": 1075, "foods": { "Foundation": 78, "SR Legacy": 1579 } },
+    { "id": 1076, "foods": { "Foundation": 2 } },
+    { "id": 1077, "foods": { "Foundation": 2 } },
+    { "id": 1078, "foods": { "Branded": 3 } },
+    {
+      "id": 1079,
+      "foods": { "Foundation": 234, "SR Legacy": 7231, "Survey (FNDDS)": 5431, "Branded": 6665 }
+    },
+    { "id": 1080, "foods": { "Branded": 1 } },
+    { "id": 1082, "foods": { "Foundation": 10, "Branded": 135 } },
+    { "id": 1084, "foods": { "Foundation": 10, "Branded": 121 } },
+    { "id": 1085, "foods": { "Foundation": 63 } },
+    { "id": 1086, "foods": { "Branded": 346 } },
+    {
+      "id": 1087,
+      "foods": { "Foundation": 396, "SR Legacy": 7708, "Survey (FNDDS)": 5431, "Branded": 6523 }
+    },
+    { "id": 1088, "foods": { "Branded": 151 } },
+    {
+      "id": 1089,
+      "foods": { "Foundation": 396, "SR Legacy": 7713, "Survey (FNDDS)": 5431, "Branded": 6496 }
+    },
+    {
+      "id": 1090,
+      "foods": { "Foundation": 396, "SR Legacy": 7421, "Survey (FNDDS)": 5431, "Branded": 900 }
+    },
+    {
+      "id": 1091,
+      "foods": { "Foundation": 396, "SR Legacy": 7467, "Survey (FNDDS)": 5431, "Branded": 815 }
+    },
+    {
+      "id": 1092,
+      "foods": { "Foundation": 396, "SR Legacy": 7516, "Survey (FNDDS)": 5431, "Branded": 4591 }
+    },
+    {
+      "id": 1093,
+      "foods": { "Foundation": 378, "SR Legacy": 7709, "Survey (FNDDS)": 5431, "Branded": 8165 }
+    },
+    { "id": 1094, "foods": { "Foundation": 17 } },
+    {
+      "id": 1095,
+      "foods": { "Foundation": 396, "SR Legacy": 7406, "Survey (FNDDS)": 5431, "Branded": 897 }
+    },
+    { "id": 1096, "foods": { "Branded": 101 } },
+    { "id": 1097, "foods": { "Foundation": 17 } },
+    {
+      "id": 1098,
+      "foods": { "Foundation": 396, "SR Legacy": 7284, "Survey (FNDDS)": 5431, "Branded": 423 }
+    },
+    { "id": 1099, "foods": { "SR Legacy": 538 } },
+    { "id": 1100, "foods": { "Foundation": 47, "Branded": 345 } },
+    { "id": 1101, "foods": { "Foundation": 396, "SR Legacy": 6492, "Branded": 455 } },
+    { "id": 1102, "foods": { "Foundation": 68, "Branded": 91 } },
+    {
+      "id": 1103,
+      "foods": { "Foundation": 153, "SR Legacy": 6865, "Survey (FNDDS)": 5431, "Branded": 403 }
+    },
+    { "id": 1104, "foods": { "SR Legacy": 7356, "Branded": 2857 } },
+    { "id": 1105, "foods": { "Foundation": 57, "SR Legacy": 6788, "Survey (FNDDS)": 5431 } },
+    {
+      "id": 1106,
+      "foods": { "Foundation": 52, "SR Legacy": 6918, "Survey (FNDDS)": 5431, "Branded": 552 }
+    },
+    { "id": 1107, "foods": { "Foundation": 38, "SR Legacy": 5440, "Survey (FNDDS)": 5431 } },
+    { "id": 1108, "foods": { "Foundation": 38, "SR Legacy": 5352, "Survey (FNDDS)": 5431 } },
+    {
+      "id": 1109,
+      "foods": { "Foundation": 86, "SR Legacy": 5580, "Survey (FNDDS)": 5431, "Branded": 8 }
+    },
+    { "id": 1110, "foods": { "Foundation": 78, "SR Legacy": 5181, "Branded": 2429 } },
+    { "id": 1111, "foods": { "Foundation": 72, "SR Legacy": 138 } },
+    { "id": 1112, "foods": { "Foundation": 67, "SR Legacy": 1819, "Branded": 3 } },
+    { "id": 1113, "foods": { "Foundation": 15 } },
+    {
+      "id": 1114,
+      "foods": { "Foundation": 78, "SR Legacy": 5185, "Survey (FNDDS)": 5431, "Branded": 1473 }
+    },
+    { "id": 1116, "foods": { "Foundation": 2 } },
+    { "id": 1117, "foods": { "Foundation": 2 } },
+    { "id": 1118, "foods": { "Foundation": 4 } },
+    { "id": 1119, "foods": { "Foundation": 12 } },
+    { "id": 1120, "foods": { "Foundation": 38, "SR Legacy": 5341, "Survey (FNDDS)": 5431 } },
+    { "id": 1121, "foods": { "Foundation": 11 } },
+    { "id": 1122, "foods": { "Foundation": 36, "SR Legacy": 5314, "Survey (FNDDS)": 5431 } },
+    { "id": 1123, "foods": { "Foundation": 29, "SR Legacy": 5294, "Survey (FNDDS)": 5431 } },
+    { "id": 1124, "foods": { "Branded": 44 } },
+    { "id": 1125, "foods": { "Foundation": 82, "SR Legacy": 1890 } },
+    { "id": 1126, "foods": { "Foundation": 82, "SR Legacy": 1888 } },
+    { "id": 1127, "foods": { "Foundation": 82, "SR Legacy": 1872 } },
+    { "id": 1128, "foods": { "Foundation": 58, "SR Legacy": 1463 } },
+    { "id": 1129, "foods": { "Foundation": 58, "SR Legacy": 1477 } },
+    { "id": 1130, "foods": { "Foundation": 58, "SR Legacy": 1466 } },
+    { "id": 1131, "foods": { "Foundation": 58, "SR Legacy": 1461 } },
+    { "id": 1137, "foods": { "Foundation": 17 } },
+    { "id": 1146, "foods": { "Foundation": 17 } },
+    { "id": 1158, "foods": { "Branded": 97 } },
+    { "id": 1159, "foods": { "Foundation": 11 } },
+    { "id": 1160, "foods": { "Foundation": 11 } },
+    { "id": 1161, "foods": { "Foundation": 14 } },
+    {
+      "id": 1162,
+      "foods": { "Foundation": 118, "SR Legacy": 7332, "Survey (FNDDS)": 5431, "Branded": 3421 }
+    },
+    {
+      "id": 1165,
+      "foods": { "Foundation": 214, "SR Legacy": 7402, "Survey (FNDDS)": 5431, "Branded": 982 }
+    },
+    {
+      "id": 1166,
+      "foods": { "Foundation": 194, "SR Legacy": 7421, "Survey (FNDDS)": 5431, "Branded": 1034 }
+    },
+    {
+      "id": 1167,
+      "foods": { "Foundation": 221, "SR Legacy": 7402, "Survey (FNDDS)": 5431, "Branded": 1185 }
+    },
+    { "id": 1170, "foods": { "Foundation": 89, "SR Legacy": 6376, "Branded": 705 } },
+    {
+      "id": 1175,
+      "foods": { "Foundation": 258, "SR Legacy": 7262, "Survey (FNDDS)": 5431, "Branded": 1111 }
+    },
+    { "id": 1176, "foods": { "Foundation": 118, "Branded": 176 } },
+    {
+      "id": 1177,
+      "foods": { "Foundation": 172, "SR Legacy": 6851, "Survey (FNDDS)": 5431, "Branded": 696 }
+    },
+    {
+      "id": 1178,
+      "foods": { "Foundation": 76, "SR Legacy": 7113, "Survey (FNDDS)": 5431, "Branded": 1029 }
+    },
+    {
+      "id": 1180,
+      "foods": { "Foundation": 39, "SR Legacy": 4611, "Survey (FNDDS)": 5431, "Branded": 58 }
+    },
+    { "id": 1181, "foods": { "Branded": 39 } },
+    { "id": 1183, "foods": { "Foundation": 70, "SR Legacy": 606 } },
+    { "id": 1184, "foods": { "Foundation": 65, "SR Legacy": 1419 } },
+    {
+      "id": 1185,
+      "foods": { "Foundation": 85, "SR Legacy": 5054, "Survey (FNDDS)": 5431, "Branded": 413 }
+    },
+    { "id": 1186, "foods": { "SR Legacy": 6500, "Survey (FNDDS)": 5431, "Branded": 410 } },
+    { "id": 1187, "foods": { "SR Legacy": 6722, "Survey (FNDDS)": 5431 } },
+    { "id": 1188, "foods": { "Foundation": 11 } },
+    { "id": 1190, "foods": { "SR Legacy": 6482, "Survey (FNDDS)": 5431, "Branded": 14 } },
+    { "id": 1191, "foods": { "Foundation": 1 } },
+    { "id": 1192, "foods": { "Foundation": 1 } },
+    { "id": 1194, "foods": { "Foundation": 27 } },
+    { "id": 1195, "foods": { "Foundation": 27 } },
+    { "id": 1196, "foods": { "Foundation": 27 } },
+    { "id": 1197, "foods": { "Foundation": 27 } },
+    { "id": 1198, "foods": { "Foundation": 27, "SR Legacy": 2091 } },
+    { "id": 1199, "foods": { "Foundation": 27 } },
+    { "id": 1210, "foods": { "Foundation": 118, "SR Legacy": 5030, "Branded": 11 } },
+    { "id": 1211, "foods": { "Foundation": 118, "SR Legacy": 5080, "Branded": 10 } },
+    { "id": 1212, "foods": { "Foundation": 118, "SR Legacy": 5084, "Branded": 10 } },
+    { "id": 1213, "foods": { "Foundation": 118, "SR Legacy": 5083, "Branded": 10 } },
+    { "id": 1214, "foods": { "Foundation": 118, "SR Legacy": 5097, "Branded": 10 } },
+    { "id": 1215, "foods": { "Foundation": 118, "SR Legacy": 5096, "Branded": 10 } },
+    { "id": 1216, "foods": { "Foundation": 18, "SR Legacy": 4930, "Branded": 4 } },
+    { "id": 1217, "foods": { "Foundation": 118, "SR Legacy": 5079, "Branded": 10 } },
+    { "id": 1218, "foods": { "Foundation": 107, "SR Legacy": 5049, "Branded": 10 } },
+    { "id": 1219, "foods": { "Foundation": 118, "SR Legacy": 5083, "Branded": 10 } },
+    { "id": 1220, "foods": { "Foundation": 107, "SR Legacy": 5070, "Branded": 10 } },
+    { "id": 1221, "foods": { "Foundation": 118, "SR Legacy": 5076, "Branded": 10 } },
+    { "id": 1222, "foods": { "Foundation": 107, "SR Legacy": 5025, "Branded": 10 } },
+    { "id": 1223, "foods": { "Foundation": 107, "SR Legacy": 4872, "Branded": 10 } },
+    { "id": 1224, "foods": { "Foundation": 107, "SR Legacy": 5029, "Branded": 10 } },
+    { "id": 1225, "foods": { "Foundation": 107, "SR Legacy": 5025, "Branded": 9 } },
+    { "id": 1226, "foods": { "Foundation": 107, "SR Legacy": 5017, "Branded": 10 } },
+    { "id": 1227, "foods": { "Foundation": 107, "SR Legacy": 5025, "Branded": 10 } },
+    { "id": 1228, "foods": { "Foundation": 91, "SR Legacy": 1431 } },
+    { "id": 1232, "foods": { "Foundation": 89, "Branded": 6 } },
+    { "id": 1234, "foods": { "Branded": 3 } },
+    { "id": 1235, "foods": { "Branded": 2984 } },
+    { "id": 1242, "foods": { "SR Legacy": 4616, "Survey (FNDDS)": 5431 } },
+    { "id": 1246, "foods": { "SR Legacy": 4762, "Survey (FNDDS)": 5431 } },
+    {
+      "id": 1253,
+      "foods": { "Foundation": 89, "SR Legacy": 7394, "Survey (FNDDS)": 5431, "Branded": 6702 }
+    },
+    { "id": 1257, "foods": { "Foundation": 136, "SR Legacy": 4179, "Branded": 6592 } },
+    {
+      "id": 1258,
+      "foods": { "Foundation": 174, "SR Legacy": 7450, "Survey (FNDDS)": 5431, "Branded": 6839 }
+    },
+    { "id": 1259, "foods": { "Foundation": 126, "SR Legacy": 5692, "Survey (FNDDS)": 5431 } },
+    { "id": 1260, "foods": { "Foundation": 126, "SR Legacy": 5729, "Survey (FNDDS)": 5431 } },
+    { "id": 1261, "foods": { "Foundation": 127, "SR Legacy": 5919, "Survey (FNDDS)": 5431 } },
+    { "id": 1262, "foods": { "Foundation": 134, "SR Legacy": 6268, "Survey (FNDDS)": 5431 } },
+    { "id": 1263, "foods": { "Foundation": 147, "SR Legacy": 6450, "Survey (FNDDS)": 5431 } },
+    { "id": 1264, "foods": { "Foundation": 152, "SR Legacy": 6793, "Survey (FNDDS)": 5431 } },
+    { "id": 1265, "foods": { "Foundation": 156, "SR Legacy": 6999, "Survey (FNDDS)": 5431 } },
+    { "id": 1266, "foods": { "Foundation": 156, "SR Legacy": 6989, "Survey (FNDDS)": 5431 } },
+    { "id": 1267, "foods": { "Foundation": 133, "SR Legacy": 2849 } },
+    { "id": 1268, "foods": { "Foundation": 72, "SR Legacy": 7015, "Survey (FNDDS)": 5431 } },
+    { "id": 1269, "foods": { "Foundation": 78, "SR Legacy": 7031, "Survey (FNDDS)": 5431 } },
+    { "id": 1270, "foods": { "Foundation": 72, "SR Legacy": 6940, "Survey (FNDDS)": 5431 } },
+    { "id": 1271, "foods": { "Foundation": 126, "SR Legacy": 6304, "Survey (FNDDS)": 5431 } },
+    { "id": 1272, "foods": { "Foundation": 63, "SR Legacy": 5772, "Survey (FNDDS)": 5431 } },
+    { "id": 1273, "foods": { "Foundation": 126, "SR Legacy": 2316 } },
+    { "id": 1274, "foods": { "Foundation": 69, "SR Legacy": 2725 } },
+    { "id": 1275, "foods": { "Foundation": 69, "SR Legacy": 6782, "Survey (FNDDS)": 5431 } },
+    { "id": 1276, "foods": { "Foundation": 120, "SR Legacy": 5707, "Survey (FNDDS)": 5431 } },
+    { "id": 1277, "foods": { "Foundation": 101, "SR Legacy": 6300, "Survey (FNDDS)": 5431 } },
+    { "id": 1278, "foods": { "Foundation": 63, "SR Legacy": 5800, "Survey (FNDDS)": 5431 } },
+    { "id": 1279, "foods": { "Foundation": 3, "SR Legacy": 5779, "Survey (FNDDS)": 5431 } },
+    { "id": 1280, "foods": { "Foundation": 62, "SR Legacy": 5756, "Survey (FNDDS)": 5431 } },
+    { "id": 1281, "foods": { "Foundation": 82 } },
+    { "id": 1283, "foods": { "SR Legacy": 489 } },
+    { "id": 1284, "foods": { "Foundation": 11 } },
+    { "id": 1285, "foods": { "Foundation": 19, "SR Legacy": 137 } },
+    { "id": 1286, "foods": { "Foundation": 19, "SR Legacy": 137 } },
+    { "id": 1287, "foods": { "Foundation": 8 } },
+    { "id": 1288, "foods": { "Foundation": 19, "SR Legacy": 138 } },
+    { "id": 1289, "foods": { "Foundation": 8 } },
+    {
+      "id": 1292,
+      "foods": { "Foundation": 174, "SR Legacy": 7277, "Survey (FNDDS)": 5431, "Branded": 1119 }
+    },
+    {
+      "id": 1293,
+      "foods": { "Foundation": 159, "SR Legacy": 7279, "Survey (FNDDS)": 5431, "Branded": 1133 }
+    },
+    { "id": 1294, "foods": { "Foundation": 19 } },
+    { "id": 1296, "foods": { "Foundation": 19 } },
+    { "id": 1298, "foods": { "Foundation": 4 } },
+    { "id": 1299, "foods": { "Foundation": 131, "SR Legacy": 2373 } },
+    { "id": 1300, "foods": { "Foundation": 131, "SR Legacy": 2755 } },
+    { "id": 1301, "foods": { "Foundation": 131, "SR Legacy": 2235 } },
+    { "id": 1303, "foods": { "Foundation": 122, "SR Legacy": 1251 } },
+    { "id": 1304, "foods": { "Foundation": 122, "SR Legacy": 1913 } },
+    { "id": 1305, "foods": { "Foundation": 116, "SR Legacy": 878 } },
+    { "id": 1306, "foods": { "Foundation": 54, "SR Legacy": 1216 } },
+    { "id": 1307, "foods": { "SR Legacy": 55 } },
+    { "id": 1310, "foods": { "SR Legacy": 352 } },
+    { "id": 1311, "foods": { "Foundation": 123, "SR Legacy": 1512 } },
+    { "id": 1312, "foods": { "Foundation": 118, "SR Legacy": 1381 } },
+    { "id": 1313, "foods": { "Foundation": 56, "SR Legacy": 2487 } },
+    { "id": 1314, "foods": { "Foundation": 66, "SR Legacy": 1382 } },
+    { "id": 1315, "foods": { "Foundation": 77, "SR Legacy": 1864 } },
+    { "id": 1316, "foods": { "Foundation": 78, "SR Legacy": 1842 } },
+    { "id": 1317, "foods": { "Foundation": 63, "SR Legacy": 1164 } },
+    { "id": 1321, "foods": { "Foundation": 120, "SR Legacy": 1660 } },
+    { "id": 1323, "foods": { "Foundation": 125, "SR Legacy": 2459 } },
+    { "id": 1325, "foods": { "Foundation": 1, "SR Legacy": 2284 } },
+    { "id": 1329, "foods": { "Foundation": 67, "SR Legacy": 1887 } },
+    { "id": 1330, "foods": { "Foundation": 48 } },
+    { "id": 1331, "foods": { "Foundation": 26, "SR Legacy": 1593 } },
+    { "id": 1332, "foods": { "Foundation": 1, "SR Legacy": 263 } },
+    { "id": 1333, "foods": { "Foundation": 119, "SR Legacy": 2076 } },
+    { "id": 1334, "foods": { "Foundation": 119 } },
+    { "id": 1335, "foods": { "Foundation": 118 } },
+    { "id": 1340, "foods": { "Foundation": 6 } },
+    { "id": 1341, "foods": { "Foundation": 6 } },
+    { "id": 1342, "retained": true },
+    { "id": 1343, "retained": true },
+    { "id": 1404, "foods": { "Foundation": 66, "SR Legacy": 1967 } },
+    { "id": 1405, "foods": { "Foundation": 118, "SR Legacy": 1035 } },
+    { "id": 1406, "foods": { "Foundation": 129, "SR Legacy": 1260 } },
+    { "id": 1407, "foods": { "Foundation": 1 } },
+    { "id": 1408, "foods": { "Foundation": 1, "SR Legacy": 165 } },
+    { "id": 1409, "foods": { "Foundation": 13, "SR Legacy": 568 } },
+    { "id": 1410, "foods": { "SR Legacy": 114 } },
+    { "id": 1411, "foods": { "Foundation": 117, "SR Legacy": 1069 } },
+    { "id": 1412, "foods": { "SR Legacy": 168 } },
+    { "id": 1413, "foods": { "Foundation": 1 } },
+    { "id": 1414, "foods": { "Foundation": 107 } },
+    {
+      "id": 2000,
+      "foods": { "Foundation": 5, "SR Legacy": 6007, "Survey (FNDDS)": 5431, "Branded": 7678 }
+    },
+    { "id": 2003, "foods": { "Foundation": 83 } },
+    { "id": 2004, "foods": { "Foundation": 83 } },
+    { "id": 2005, "foods": { "Foundation": 83 } },
+    { "id": 2006, "foods": { "Foundation": 87 } },
+    { "id": 2007, "foods": { "Foundation": 83 } },
+    { "id": 2008, "foods": { "Foundation": 83 } },
+    { "id": 2009, "foods": { "Foundation": 58 } },
+    { "id": 2010, "foods": { "Foundation": 56 } },
+    { "id": 2012, "foods": { "Foundation": 65 } },
+    { "id": 2013, "foods": { "Foundation": 82 } },
+    { "id": 2014, "foods": { "Foundation": 96 } },
+    { "id": 2015, "foods": { "Foundation": 83 } },
+    { "id": 2016, "foods": { "Foundation": 84 } },
+    { "id": 2017, "foods": { "Foundation": 74 } },
+    { "id": 2018, "foods": { "Foundation": 79 } },
+    { "id": 2019, "foods": { "Foundation": 94 } },
+    { "id": 2020, "foods": { "Foundation": 72 } },
+    { "id": 2021, "foods": { "Foundation": 83 } },
+    { "id": 2022, "foods": { "Foundation": 59 } },
+    { "id": 2023, "foods": { "Foundation": 125 } },
+    { "id": 2024, "foods": { "Foundation": 124 } },
+    { "id": 2025, "foods": { "Foundation": 125 } },
+    { "id": 2026, "foods": { "Foundation": 125 } },
+    { "id": 2028, "foods": { "Foundation": 11 } },
+    { "id": 2029, "foods": { "Foundation": 10 } },
+    { "id": 2032, "foods": { "Foundation": 13 } },
+    { "id": 2033, "foods": { "Foundation": 34 } },
+    { "id": 2038, "foods": { "Foundation": 19 } },
+    { "id": 2047, "foods": { "Foundation": 279 } },
+    { "id": 2048, "foods": { "Foundation": 200 } },
+    { "id": 2049, "foods": { "Foundation": 6 } },
+    { "id": 2050, "foods": { "Foundation": 6 } },
+    { "id": 2051, "foods": { "Foundation": 6 } },
+    { "id": 2052, "foods": { "Foundation": 15 } },
+    { "id": 2053, "foods": { "Foundation": 4 } },
+    { "id": 2057, "foods": { "Foundation": 11 } },
+    { "id": 2058, "foods": { "Foundation": 23 } },
+    { "id": 2059, "foods": { "Foundation": 11 } },
+    { "id": 2060, "foods": { "Foundation": 11 } },
+    { "id": 2061, "foods": { "Foundation": 11 } },
+    { "id": 2062, "foods": { "Foundation": 11 } },
+    { "id": 2063, "foods": { "Foundation": 2 } },
+    { "id": 2065, "foods": { "Foundation": 19 } },
+    { "id": 2068, "foods": { "Foundation": 24, "Branded": 92 } },
+    { "id": 2069, "foods": { "Foundation": 11 } }
+  ]
+}

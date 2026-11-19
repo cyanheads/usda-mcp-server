@@ -8,8 +8,7 @@ import { NUTRIENT_REFERENCE } from '@/services/fdc/nutrient-reference.js';
 
 export const usdaNutrientsResource = resource('usda://nutrients', {
   name: 'USDA Nutrient Reference',
-  description:
-    'Access the complete FDC nutrient reference — all ~150 tracked nutrients with their numeric IDs, names, SR reference numbers, units, and categories. Use to resolve nutrient names to FDC IDs for the nutrients[] filter on usda_get_food, usda_get_foods, usda_compare_foods, and usda_list_nutrients.',
+  description: `Access the complete FDC nutrient reference — all ${NUTRIENT_REFERENCE.length} tracked nutrients with their numeric IDs, names, SR reference numbers, units, and categories. Use to resolve nutrient names to FDC IDs for the nutrients[] filter on usda_get_food, usda_get_foods, and usda_compare_foods; usda_list_nutrients returns the same rows filtered by category or query.`,
   mimeType: 'application/json',
   /**
    * The nutrient table is bundled at build time and never varies by caller, so

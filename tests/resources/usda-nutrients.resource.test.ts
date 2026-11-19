@@ -3,9 +3,11 @@
  * @module tests/resources/usda-nutrients.resource.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it } from 'vitest';
 import { usdaNutrientsResource } from '@/mcp-server/resources/definitions/usda-nutrients.resource.js';
+import { usdaListNutrients } from '@/mcp-server/tools/definitions/usda-list-nutrients.tool.js';
+import { NUTRIENT_REFERENCE } from '@/services/fdc/nutrient-reference.js';
 
 // No service dependency — reads from static NUTRIENT_REFERENCE
 
@@ -22,6 +24,23 @@ describe('usdaNutrientsResource', () => {
     expect(result).toHaveProperty('nutrients');
     const { nutrients } = result as { nutrients: Array<{ id: number; name: string }> };
     expect(nutrients.length).toBeGreaterThan(0);
+  });
+
+  it('serves the whole table, the same rows usda_list_nutrients lists with no filter', async () => {
+    const resource = await usdaNutrientsResource.handler(
+      nutrientParams.parse({}),
+      createMockContext(),
+    );
+    const listing = await runToolContract(usdaListNutrients, {});
+
+    expect(resource).toEqual({ nutrients: NUTRIENT_REFERENCE });
+    expect(listing.structuredContent).toEqual(resource);
+  });
+
+  it('states the table size in its description', () => {
+    expect(usdaNutrientsResource.description).toContain(
+      `all ${NUTRIENT_REFERENCE.length} tracked nutrients`,
+    );
   });
 
   it('includes well-known nutrient IDs', async () => {
