@@ -1,6 +1,6 @@
 # usda-mcp-server - Directory Structure
 
-Generated on: 2026-11-11 06:45:55
+Generated on: 2026-11-19 13:44:59
 
 ```text
 usda-mcp-server/
@@ -120,6 +120,9 @@ usda-mcp-server/
 │   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── scripts/
+│   ├── data/
+│   │   ├── nutrient.csv
+│   │   └── reported-nutrient-ids.json
 │   ├── build-changelog.ts
 │   ├── build.ts
 │   ├── check-dependency-specifiers.ts
@@ -130,6 +133,7 @@ usda-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── generate-nutrient-reference.ts
 │   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
@@ -150,18 +154,20 @@ usda-mcp-server/
 │   │   │       ├── usda-food.resource.ts
 │   │   │       └── usda-nutrients.resource.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── index.ts
-│   │           ├── usda-compare-foods.tool.ts
-│   │           ├── usda-get-food.tool.ts
-│   │           ├── usda-get-foods.tool.ts
-│   │           ├── usda-list-nutrients.tool.ts
-│   │           └── usda-search-foods.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── index.ts
+│   │       │   ├── usda-compare-foods.tool.ts
+│   │       │   ├── usda-get-food.tool.ts
+│   │       │   ├── usda-get-foods.tool.ts
+│   │       │   ├── usda-list-nutrients.tool.ts
+│   │       │   └── usda-search-foods.tool.ts
+│   │       └── fdc-id-list.ts
 │   ├── services/
 │   │   └── fdc/
 │   │       ├── basis.ts
 │   │       ├── fdc-service.ts
 │   │       ├── nutrient-reference.ts
+│   │       ├── provenance.ts
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
@@ -174,7 +180,8 @@ usda-mcp-server/
 │   │   └── fdc/
 │   │       ├── basis.test.ts
 │   │       ├── fdc-service.test.ts
-│   │       └── nutrient-reference.test.ts
+│   │       ├── nutrient-reference.test.ts
+│   │       └── provenance.test.ts
 │   ├── tools/
 │   │   ├── strict-inputs.test.ts
 │   │   ├── usda-compare-foods.integration.test.ts

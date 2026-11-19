@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.3](changelog/0.2.x/0.2.3.md) — 2026-11-19
+
+usda_get_food and usda_get_foods can report how FDC derived each nutrient value, usda_search_foods pages up to 200 foods, usda_list_nutrients takes a query over a table that now holds 269 nutrients, and usda_compare_foods drops repeated IDs and defers past 5.
+
 ## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-11-14
 
 Portions follow FDC's display order, printed UPC/EAN barcodes also match the forms FDC stores with other leading zeros or no check digit, and a slow Foundation batch is refetched per ID, with IDs unanswered at the 45 s deadline deferred in usda_get_foods and usda_compare_foods.
